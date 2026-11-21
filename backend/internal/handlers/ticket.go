@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/chami2002/resolveflow-api/internal/middleware"
 	"github.com/chami2002/resolveflow-api/internal/models"
 	"github.com/chami2002/resolveflow-api/internal/tickets"
 	"github.com/google/uuid"
@@ -37,6 +38,7 @@ type TicketRepository interface {
 	Update(
 		ctx context.Context,
 		id string,
+		actorID string,
 		req tickets.UpdateTicketRequest,
 	) (*models.Ticket, error)
 }
@@ -216,7 +218,18 @@ func (h *TicketHandler) UpdateTicket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := h.repository.Update(r.Context(), id, request)
+	claims, ok := middleware.GetUserClaims(r.Context())
+	if !ok {
+		http.Error(w, `{"error":"authentication required"}`, http.StatusUnauthorized)
+		return
+	}
+
+	result, err := h.repository.Update(
+		r.Context(),
+		id,
+		claims.UserID,
+		request,
+	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			http.Error(w, `{"error":"ticket not found"}`, http.StatusNotFound)

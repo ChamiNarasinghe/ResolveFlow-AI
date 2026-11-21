@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -233,9 +234,43 @@ func (r *TicketRepository) GetByID(
 func (r *TicketRepository) Update(
 	ctx context.Context,
 	id string,
+	actorID string,
 	req tickets.UpdateTicketRequest,
 ) (*models.Ticket, error) {
-	query := `
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	// Lock the row and read current values for audit comparison.
+	var old struct {
+		status         string
+		priority       string
+		category       *string
+		assignedTeamID *string
+		assignedTo     *string
+	}
+
+	err = tx.QueryRow(ctx,
+		`SELECT status, priority, category, assigned_team_id, assigned_to
+		 FROM tickets WHERE id = $1::uuid FOR UPDATE`, id,
+	).Scan(
+		&old.status,
+		&old.priority,
+		&old.category,
+		&old.assignedTeamID,
+		&old.assignedTo,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, pgx.ErrNoRows
+		}
+		return nil, fmt.Errorf("failed to lock ticket: %w", err)
+	}
+
+	// Execute the existing UPDATE statement using the transaction.
+	updateQuery := `
 		UPDATE tickets
 		SET
 			status = CASE
@@ -289,9 +324,9 @@ func (r *TicketRepository) Update(
 
 	var ticket models.Ticket
 
-	err := r.db.QueryRow(
+	err = tx.QueryRow(
 		ctx,
-		query,
+		updateQuery,
 		id,
 		req.Status.Set,
 		optionalStringValue(req.Status),
@@ -320,12 +355,72 @@ func (r *TicketRepository) Update(
 		&ticket.UpdatedAt,
 		&ticket.ResolvedAt,
 	)
-
 	if err != nil {
 		return nil, fmt.Errorf("failed to update ticket: %w", err)
 	}
 
+	// Build audit diff — only include fields that actually changed.
+	oldValues := map[string]any{}
+	newValues := map[string]any{}
+
+	if ticket.Status != old.status {
+		oldValues["status"] = old.status
+		newValues["status"] = ticket.Status
+	}
+	if ticket.Priority != old.priority {
+		oldValues["priority"] = old.priority
+		newValues["priority"] = ticket.Priority
+	}
+	if !stringPtrEqual(ticket.Category, old.category) {
+		oldValues["category"] = old.category
+		newValues["category"] = ticket.Category
+	}
+	if !stringPtrEqual(ticket.AssignedTeamID, old.assignedTeamID) {
+		oldValues["assigned_team_id"] = old.assignedTeamID
+		newValues["assigned_team_id"] = ticket.AssignedTeamID
+	}
+	if !stringPtrEqual(ticket.AssignedTo, old.assignedTo) {
+		oldValues["assigned_to"] = old.assignedTo
+		newValues["assigned_to"] = ticket.AssignedTo
+	}
+
+	if len(oldValues) > 0 {
+		oldJSON, err := json.Marshal(oldValues)
+		if err != nil {
+			return nil, fmt.Errorf("failed to serialize audit old_value: %w", err)
+		}
+		newJSON, err := json.Marshal(newValues)
+		if err != nil {
+			return nil, fmt.Errorf("failed to serialize audit new_value: %w", err)
+		}
+
+		_, err = tx.Exec(ctx,
+			`INSERT INTO ticket_history
+				(ticket_id, actor_id, action, old_value, new_value)
+			 VALUES ($1, $2, 'ticket.updated', $3, $4)`,
+			ticket.ID, actorID, oldJSON, newJSON,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to insert audit history: %w", err)
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
 	return &ticket, nil
+}
+
+// stringPtrEqual compares two nullable strings for equality.
+func stringPtrEqual(a, b *string) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	return *a == *b
 }
 
 func optionalStringValue(field tickets.OptionalString) any {

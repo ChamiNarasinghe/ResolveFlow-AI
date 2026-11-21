@@ -44,6 +44,11 @@ func GetUserClaims(ctx context.Context) (*auth.Claims, bool) {
 	return claims, ok
 }
 
+// SetUserClaims stores claims in the context. Used in tests and middleware.
+func SetUserClaims(ctx context.Context, claims *auth.Claims) context.Context {
+	return context.WithValue(ctx, userClaimsKey, claims)
+}
+
 // RequireRoles allows access only to users with one of the specified roles.
 func RequireRoles(allowedRoles ...string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {

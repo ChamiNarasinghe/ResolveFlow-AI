@@ -11,9 +11,21 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/chami2002/resolveflow-api/internal/auth"
+	"github.com/chami2002/resolveflow-api/internal/middleware"
 	"github.com/chami2002/resolveflow-api/internal/models"
 	"github.com/chami2002/resolveflow-api/internal/tickets"
 )
+
+// withTestClaims injects fake JWT claims into a request context.
+func withTestClaims(r *http.Request) *http.Request {
+	claims := &auth.Claims{
+		UserID: "test-actor-id",
+		Email:  "test@example.com",
+		Role:   "agent",
+	}
+	return r.WithContext(middleware.SetUserClaims(r.Context(), claims))
+}
 
 // mockTicketRepository simulates the ticket repository for handler tests.
 type mockTicketRepository struct {
@@ -52,6 +64,7 @@ func (m *mockTicketRepository) GetByID(
 func (m *mockTicketRepository) Update(
 	ctx context.Context,
 	id string,
+	actorID string,
 	req tickets.UpdateTicketRequest,
 ) (*models.Ticket, error) {
 	m.updateCalled = true
@@ -367,6 +380,7 @@ func TestUpdateTicketSuccess(t *testing.T) {
 		strings.NewReader(body),
 	)
 	request.SetPathValue("id", id)
+	request = withTestClaims(request)
 
 	recorder := httptest.NewRecorder()
 	handler.UpdateTicket(recorder, request)
@@ -495,6 +509,7 @@ func TestUpdateTicketNotFound(t *testing.T) {
 		strings.NewReader(`{"status":"resolved"}`),
 	)
 	request.SetPathValue("id", id)
+	request = withTestClaims(request)
 
 	recorder := httptest.NewRecorder()
 	handler.UpdateTicket(recorder, request)
@@ -519,6 +534,7 @@ func TestUpdateTicketDatabaseError(t *testing.T) {
 		strings.NewReader(`{"status":"resolved"}`),
 	)
 	request.SetPathValue("id", id)
+	request = withTestClaims(request)
 
 	recorder := httptest.NewRecorder()
 	handler.UpdateTicket(recorder, request)

@@ -2,7 +2,9 @@ package repository
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -37,6 +39,42 @@ func setupTestRepository(t *testing.T) (*TicketRepository, *pgxpool.Pool) {
 	t.Cleanup(pool.Close)
 
 	return NewTicketRepository(pool), pool
+}
+
+func createTestUser(t *testing.T, pool *pgxpool.Pool) string {
+	t.Helper()
+
+	email := fmt.Sprintf("ticket-test-%d@example.com", time.Now().UnixNano())
+
+	var userID string
+
+	err := pool.QueryRow(
+		context.Background(),
+		`INSERT INTO users (full_name, email, password_hash, role)
+         VALUES ($1, $2, $3, $4)
+         RETURNING id`,
+		"Ticket Test Agent",
+		email,
+		"test-password-hash",
+		"agent",
+	).Scan(&userID)
+
+	if err != nil {
+		t.Fatalf("failed to create test user: %v", err)
+	}
+
+	t.Cleanup(func() {
+		_, err := pool.Exec(
+			context.Background(),
+			"DELETE FROM users WHERE id = $1",
+			userID,
+		)
+		if err != nil {
+			t.Errorf("failed to clean up test user: %v", err)
+		}
+	})
+
+	return userID
 }
 
 func TestTicketRepositoryCreate(t *testing.T) {
@@ -144,6 +182,7 @@ func TestTicketRepositoryUpdateStatusAndPriority(t *testing.T) {
 	repo, pool := setupTestRepository(t)
 	ctx := context.Background()
 
+	actorID := createTestUser(t, pool)
 	id := createTicketForUpdateTest(t, repo, pool)
 
 	status := "in_progress"
@@ -154,7 +193,7 @@ func TestTicketRepositoryUpdateStatusAndPriority(t *testing.T) {
 		Priority: tickets.OptionalString{Set: true, Value: &priority},
 	}
 
-	result, err := repo.Update(ctx, id, request)
+	result, err := repo.Update(ctx, id, actorID, request)
 	if err != nil {
 		t.Fatalf("failed to update ticket: %v", err)
 	}
@@ -172,6 +211,7 @@ func TestTicketRepositoryUpdateCategory(t *testing.T) {
 	repo, pool := setupTestRepository(t)
 	ctx := context.Background()
 
+	actorID := createTestUser(t, pool)
 	id := createTicketForUpdateTest(t, repo, pool)
 
 	category := "Payment"
@@ -183,7 +223,7 @@ func TestTicketRepositoryUpdateCategory(t *testing.T) {
 		},
 	}
 
-	result, err := repo.Update(ctx, id, request)
+	result, err := repo.Update(ctx, id, actorID, request)
 	if err != nil {
 		t.Fatalf("failed to update category: %v", err)
 	}
@@ -197,11 +237,12 @@ func TestTicketRepositoryClearCategory(t *testing.T) {
 	repo, pool := setupTestRepository(t)
 	ctx := context.Background()
 
+	actorID := createTestUser(t, pool)
 	id := createTicketForUpdateTest(t, repo, pool)
 
 	category := "Payment"
 
-	_, err := repo.Update(ctx, id, tickets.UpdateTicketRequest{
+	_, err := repo.Update(ctx, id, actorID, tickets.UpdateTicketRequest{
 		Category: tickets.OptionalString{
 			Set:   true,
 			Value: &category,
@@ -211,7 +252,7 @@ func TestTicketRepositoryClearCategory(t *testing.T) {
 		t.Fatalf("failed to set category: %v", err)
 	}
 
-	result, err := repo.Update(ctx, id, tickets.UpdateTicketRequest{
+	result, err := repo.Update(ctx, id, actorID, tickets.UpdateTicketRequest{
 		Category: tickets.OptionalString{
 			Set:   true,
 			Value: nil,
@@ -230,11 +271,12 @@ func TestTicketRepositoryUpdateResolutionStatus(t *testing.T) {
 	repo, pool := setupTestRepository(t)
 	ctx := context.Background()
 
+	actorID := createTestUser(t, pool)
 	id := createTicketForUpdateTest(t, repo, pool)
 
 	resolved := "resolved"
 
-	result, err := repo.Update(ctx, id, tickets.UpdateTicketRequest{
+	result, err := repo.Update(ctx, id, actorID, tickets.UpdateTicketRequest{
 		Status: tickets.OptionalString{
 			Set:   true,
 			Value: &resolved,
@@ -250,7 +292,7 @@ func TestTicketRepositoryUpdateResolutionStatus(t *testing.T) {
 
 	open := "open"
 
-	result, err = repo.Update(ctx, id, tickets.UpdateTicketRequest{
+	result, err = repo.Update(ctx, id, actorID, tickets.UpdateTicketRequest{
 		Status: tickets.OptionalString{
 			Set:   true,
 			Value: &open,
@@ -266,14 +308,16 @@ func TestTicketRepositoryUpdateResolutionStatus(t *testing.T) {
 }
 
 func TestTicketRepositoryUpdateNotFound(t *testing.T) {
-	repo, _ := setupTestRepository(t)
+	repo, pool := setupTestRepository(t)
 
+	actorID := createTestUser(t, pool)
 	id := "00000000-0000-4000-8000-000000000000"
 	status := "in_progress"
 
 	_, err := repo.Update(
 		context.Background(),
 		id,
+		actorID,
 		tickets.UpdateTicketRequest{
 			Status: tickets.OptionalString{
 				Set:   true,
@@ -284,5 +328,87 @@ func TestTicketRepositoryUpdateNotFound(t *testing.T) {
 
 	if !errors.Is(err, pgx.ErrNoRows) {
 		t.Errorf("expected pgx.ErrNoRows, got %v", err)
+	}
+}
+
+func TestTicketRepositoryUpdateCreatesAuditHistory(t *testing.T) {
+	repo, pool := setupTestRepository(t)
+	ctx := context.Background()
+
+	actorID := createTestUser(t, pool)
+	ticketID := createTicketForUpdateTest(t, repo, pool)
+
+	status := "in_progress"
+	priority := "high"
+
+	_, err := repo.Update(ctx, ticketID, actorID, tickets.UpdateTicketRequest{
+		Status:   tickets.OptionalString{Set: true, Value: &status},
+		Priority: tickets.OptionalString{Set: true, Value: &priority},
+	})
+	if err != nil {
+		t.Fatalf("failed to update ticket: %v", err)
+	}
+
+	rows, err := pool.Query(ctx,
+		`SELECT actor_id, action, old_value, new_value
+		   FROM ticket_history
+		  WHERE ticket_id = $1::uuid`, ticketID)
+	if err != nil {
+		t.Fatalf("failed to query ticket_history: %v", err)
+	}
+	defer rows.Close()
+
+	type historyRow struct {
+		actorID  string
+		action   string
+		oldValue []byte
+		newValue []byte
+	}
+
+	var records []historyRow
+	for rows.Next() {
+		var r historyRow
+		if err := rows.Scan(&r.actorID, &r.action, &r.oldValue, &r.newValue); err != nil {
+			t.Fatalf("failed to scan history row: %v", err)
+		}
+		records = append(records, r)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("row iteration error: %v", err)
+	}
+
+	if len(records) != 1 {
+		t.Fatalf("expected 1 audit record, got %d", len(records))
+	}
+
+	rec := records[0]
+
+	if rec.actorID != actorID {
+		t.Errorf("expected actor_id %s, got %s", actorID, rec.actorID)
+	}
+
+	if rec.action != "ticket.updated" {
+		t.Errorf("expected action ticket.updated, got %s", rec.action)
+	}
+
+	var oldMap, newMap map[string]any
+	if err := json.Unmarshal(rec.oldValue, &oldMap); err != nil {
+		t.Fatalf("failed to decode old_value: %v", err)
+	}
+	if err := json.Unmarshal(rec.newValue, &newMap); err != nil {
+		t.Fatalf("failed to decode new_value: %v", err)
+	}
+
+	if oldMap["status"] != "open" {
+		t.Errorf("expected old status open, got %v", oldMap["status"])
+	}
+	if oldMap["priority"] != "medium" {
+		t.Errorf("expected old priority medium, got %v", oldMap["priority"])
+	}
+	if newMap["status"] != "in_progress" {
+		t.Errorf("expected new status in_progress, got %v", newMap["status"])
+	}
+	if newMap["priority"] != "high" {
+		t.Errorf("expected new priority high, got %v", newMap["priority"])
 	}
 }
