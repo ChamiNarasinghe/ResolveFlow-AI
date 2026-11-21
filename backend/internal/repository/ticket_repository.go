@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/chami2002/resolveflow-api/internal/models"
 	"github.com/chami2002/resolveflow-api/internal/tickets"
@@ -110,7 +111,8 @@ func (r *TicketRepository) List(
 	err := r.db.QueryRow(ctx,
 		`SELECT COUNT(*)
 		   FROM tickets
-		  WHERE ($1 = '' OR status = $1)
+		  WHERE deleted_at IS NULL
+		    AND ($1 = '' OR status = $1)
 		    AND ($2 = '' OR priority = $2)`,
 		status, priority,
 	).Scan(&total)
@@ -136,7 +138,8 @@ func (r *TicketRepository) List(
 			updated_at,
 			resolved_at
 		FROM tickets
-		WHERE ($1 = '' OR status = $1)
+		WHERE deleted_at IS NULL
+		  AND ($1 = '' OR status = $1)
 		  AND ($2 = '' OR priority = $2)
 		ORDER BY created_at DESC
 		LIMIT $3 OFFSET $4`,
@@ -206,6 +209,7 @@ func (r *TicketRepository) GetByID(
 			resolved_at
 		FROM tickets
 		WHERE id = $1
+		  AND deleted_at IS NULL
 	`
 
 	var ticket models.Ticket
@@ -237,6 +241,68 @@ func (r *TicketRepository) GetByID(
 	}
 
 	return &ticket, nil
+}
+
+// SoftDelete marks a ticket as deleted inside a transaction.
+// It locks the row, verifies it exists and is not already deleted,
+// sets deleted_at = NOW(), updates updated_at, and inserts a
+// ticket_history record with action "ticket.deleted".
+// The ticket row and all related records are preserved.
+func (r *TicketRepository) SoftDelete(
+	ctx context.Context,
+	id string,
+	actorID string,
+) error {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("soft delete: begin transaction: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+
+	// Lock the row and read deleted_at to detect already-deleted tickets.
+	var deletedAt *time.Time
+	err = tx.QueryRow(ctx,
+		`SELECT deleted_at FROM tickets WHERE id = $1::uuid FOR UPDATE`, id,
+	).Scan(&deletedAt)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrTicketNotFound
+		}
+		return fmt.Errorf("soft delete: lock ticket: %w", err)
+	}
+	if deletedAt != nil {
+		return ErrTicketNotFound
+	}
+
+	// Stamp deleted_at and updated_at.
+	var now time.Time
+	if err := tx.QueryRow(ctx,
+		`UPDATE tickets
+		    SET deleted_at = NOW(), updated_at = NOW()
+		  WHERE id = $1::uuid
+		  RETURNING deleted_at`,
+		id,
+	).Scan(&now); err != nil {
+		return fmt.Errorf("soft delete: update ticket: %w", err)
+	}
+
+	// Insert audit history record.
+	newJSON, err := json.Marshal(map[string]any{"deleted_at": now})
+	if err != nil {
+		return fmt.Errorf("soft delete: serialize history: %w", err)
+	}
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO ticket_history (ticket_id, actor_id, action, old_value, new_value)
+		 VALUES ($1::uuid, $2, 'ticket.deleted', '{}'::jsonb, $3)`,
+		id, actorID, newJSON,
+	); err != nil {
+		return fmt.Errorf("soft delete: insert history: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("soft delete: commit: %w", err)
+	}
+	return nil
 }
 
 func (r *TicketRepository) Update(

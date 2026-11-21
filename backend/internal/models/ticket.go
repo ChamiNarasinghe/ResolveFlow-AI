@@ -21,4 +21,5 @@ type Ticket struct {
     CreatedAt      time.Time  `json:"created_at"`
     UpdatedAt      time.Time  `json:"updated_at"`
     ResolvedAt     *time.Time `json:"resolved_at,omitempty"`
+    DeletedAt      *time.Time `json:"-"`
 }

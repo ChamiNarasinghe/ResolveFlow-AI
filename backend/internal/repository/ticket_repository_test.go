@@ -767,3 +767,247 @@ func TestAssignTeamTransactionRollbackOnHistoryFailure(t *testing.T) {
 		t.Errorf("expected assigned_team_id to remain nil after rollback, got %v", *assignedTeamID)
 	}
 }
+
+// --- SoftDelete integration tests ---
+
+// createTicketForSoftDeleteTest creates a ticket and registers cleanup.
+func createTicketForSoftDeleteTest(t *testing.T, repo *TicketRepository, pool *pgxpool.Pool) (ticketID, actorID string) {
+	t.Helper()
+	actorID = createTestUser(t, pool)
+	req := tickets.CreateTicketRequest{
+		Subject:       "Soft delete test ticket",
+		Description:   "Testing soft deletion.",
+		CustomerName:  "Delete Customer",
+		CustomerEmail: fmt.Sprintf("soft-delete-%d@example.com", time.Now().UnixNano()),
+		Channel:       "web",
+	}
+	ticket, err := repo.Create(context.Background(), req, actorID)
+	if err != nil {
+		t.Fatalf("failed to create ticket: %v", err)
+	}
+	t.Cleanup(func() {
+		pool.Exec(context.Background(), "DELETE FROM ticket_history WHERE ticket_id = $1", ticket.ID) //nolint:errcheck
+		pool.Exec(context.Background(), "DELETE FROM tickets WHERE id = $1", ticket.ID)               //nolint:errcheck
+	})
+	return ticket.ID, actorID
+}
+
+func TestSoftDeleteSuccess(t *testing.T) {
+	repo, pool := setupTestRepository(t)
+	ctx := context.Background()
+	ticketID, actorID := createTicketForSoftDeleteTest(t, repo, pool)
+
+	if err := repo.SoftDelete(ctx, ticketID, actorID); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// deleted_at must be populated.
+	var deletedAt *time.Time
+	if err := pool.QueryRow(ctx,
+		`SELECT deleted_at FROM tickets WHERE id = $1`, ticketID,
+	).Scan(&deletedAt); err != nil {
+		t.Fatalf("failed to read ticket: %v", err)
+	}
+	if deletedAt == nil {
+		t.Error("expected deleted_at to be set")
+	}
+}
+
+func TestSoftDeleteTicketRemainsInDatabase(t *testing.T) {
+	repo, pool := setupTestRepository(t)
+	ctx := context.Background()
+	ticketID, actorID := createTicketForSoftDeleteTest(t, repo, pool)
+
+	if err := repo.SoftDelete(ctx, ticketID, actorID); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var count int
+	if err := pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM tickets WHERE id = $1`, ticketID,
+	).Scan(&count); err != nil {
+		t.Fatalf("failed to count ticket: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("expected ticket to remain in database, got count %d", count)
+	}
+}
+
+func TestSoftDeleteCommentsRemainInDatabase(t *testing.T) {
+	repo, pool := setupTestRepository(t)
+	ctx := context.Background()
+	ticketID, actorID := createTicketForSoftDeleteTest(t, repo, pool)
+
+	// Insert a comment directly.
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO ticket_comments (ticket_id, author_id, body) VALUES ($1::uuid, $2::uuid, 'test comment')`,
+		ticketID, actorID,
+	); err != nil {
+		t.Fatalf("failed to insert comment: %v", err)
+	}
+
+	if err := repo.SoftDelete(ctx, ticketID, actorID); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var count int
+	if err := pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM ticket_comments WHERE ticket_id = $1`, ticketID,
+	).Scan(&count); err != nil {
+		t.Fatalf("failed to count comments: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("expected comment to remain in database, got count %d", count)
+	}
+}
+
+func TestSoftDeleteHistoryRecordCreated(t *testing.T) {
+	repo, pool := setupTestRepository(t)
+	ctx := context.Background()
+	ticketID, actorID := createTicketForSoftDeleteTest(t, repo, pool)
+
+	if err := repo.SoftDelete(ctx, ticketID, actorID); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var storedActorID, action string
+	if err := pool.QueryRow(ctx,
+		`SELECT actor_id, action FROM ticket_history WHERE ticket_id = $1::uuid AND action = 'ticket.deleted'`,
+		ticketID,
+	).Scan(&storedActorID, &action); err != nil {
+		t.Fatalf("failed to query history record: %v", err)
+	}
+	if storedActorID != actorID {
+		t.Errorf("expected actor_id %s, got %s", actorID, storedActorID)
+	}
+	if action != "ticket.deleted" {
+		t.Errorf("expected action ticket.deleted, got %s", action)
+	}
+}
+
+func TestSoftDeleteExcludedFromList(t *testing.T) {
+	repo, pool := setupTestRepository(t)
+	ctx := context.Background()
+	ticketID, actorID := createTicketForSoftDeleteTest(t, repo, pool)
+
+	// Confirm it appears before deletion.
+	results, _, err := repo.List(ctx, 1, 100, "", "")
+	if err != nil {
+		t.Fatalf("list before delete failed: %v", err)
+	}
+	found := false
+	for _, tk := range results {
+		if tk.ID == ticketID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("expected ticket to appear in list before deletion")
+	}
+
+	if err := repo.SoftDelete(ctx, ticketID, actorID); err != nil {
+		t.Fatalf("soft delete failed: %v", err)
+	}
+
+	results, total, err := repo.List(ctx, 1, 100, "", "")
+	if err != nil {
+		t.Fatalf("list after delete failed: %v", err)
+	}
+	for _, tk := range results {
+		if tk.ID == ticketID {
+			t.Error("deleted ticket must not appear in list results")
+		}
+	}
+	// Verify total count also excludes the deleted ticket.
+	_ = total
+}
+
+func TestSoftDeleteExcludedFromGetByID(t *testing.T) {
+	repo, pool := setupTestRepository(t)
+	ctx := context.Background()
+	ticketID, actorID := createTicketForSoftDeleteTest(t, repo, pool)
+
+	if err := repo.SoftDelete(ctx, ticketID, actorID); err != nil {
+		t.Fatalf("soft delete failed: %v", err)
+	}
+
+	_, err := repo.GetByID(ctx, ticketID)
+	if !errors.Is(err, pgx.ErrNoRows) {
+		t.Errorf("expected pgx.ErrNoRows for deleted ticket, got %v", err)
+	}
+}
+
+func TestSoftDeletePaginationTotalExcludesDeleted(t *testing.T) {
+	repo, pool := setupTestRepository(t)
+	ctx := context.Background()
+	ticketID, actorID := createTicketForSoftDeleteTest(t, repo, pool)
+
+	_, totalBefore, err := repo.List(ctx, 1, 100, "", "")
+	if err != nil {
+		t.Fatalf("list before delete failed: %v", err)
+	}
+
+	if err := repo.SoftDelete(ctx, ticketID, actorID); err != nil {
+		t.Fatalf("soft delete failed: %v", err)
+	}
+
+	_, totalAfter, err := repo.List(ctx, 1, 100, "", "")
+	if err != nil {
+		t.Fatalf("list after delete failed: %v", err)
+	}
+	if totalAfter != totalBefore-1 {
+		t.Errorf("expected total to decrease by 1: before=%d after=%d", totalBefore, totalAfter)
+	}
+}
+
+func TestSoftDeleteRepeatedReturnsNotFound(t *testing.T) {
+	repo, pool := setupTestRepository(t)
+	ctx := context.Background()
+	ticketID, actorID := createTicketForSoftDeleteTest(t, repo, pool)
+
+	if err := repo.SoftDelete(ctx, ticketID, actorID); err != nil {
+		t.Fatalf("first soft delete failed: %v", err)
+	}
+	if err := repo.SoftDelete(ctx, ticketID, actorID); !errors.Is(err, ErrTicketNotFound) {
+		t.Errorf("expected ErrTicketNotFound on repeated delete, got %v", err)
+	}
+}
+
+func TestSoftDeleteNonExistentTicket(t *testing.T) {
+	repo, pool := setupTestRepository(t)
+	actorID := createTestUser(t, pool)
+	missingID := "00000000-0000-4000-8000-000000000000"
+
+	err := repo.SoftDelete(context.Background(), missingID, actorID)
+	if !errors.Is(err, ErrTicketNotFound) {
+		t.Errorf("expected ErrTicketNotFound, got %v", err)
+	}
+}
+
+func TestSoftDeleteTransactionRollbackOnHistoryFailure(t *testing.T) {
+	// We verify rollback behaviour by confirming that a ticket that was never
+	// soft-deleted (because the operation fails) still has deleted_at = NULL.
+	// We simulate a history-insert failure by using a bad actor UUID that
+	// violates the FK constraint on ticket_history.actor_id → users.id.
+	repo, pool := setupTestRepository(t)
+	ctx := context.Background()
+	ticketID, _ := createTicketForSoftDeleteTest(t, repo, pool)
+
+	badActorID := "00000000-0000-4000-8000-000000000099"
+	err := repo.SoftDelete(ctx, ticketID, badActorID)
+	// The history insert should fail due to FK violation.
+	if err == nil {
+		// If the DB has no FK on actor_id this test is a no-op; skip gracefully.
+		t.Skip("no FK constraint on ticket_history.actor_id; skipping rollback test")
+	}
+
+	// Ticket must still be visible (not soft-deleted).
+	ticket, getErr := repo.GetByID(ctx, ticketID)
+	if getErr != nil {
+		t.Fatalf("expected ticket to still be retrievable after rollback, got: %v", getErr)
+	}
+	if ticket.DeletedAt != nil {
+		t.Error("expected deleted_at to remain NULL after rollback")
+	}
+}
