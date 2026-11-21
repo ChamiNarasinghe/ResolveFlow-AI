@@ -56,3 +56,44 @@ func (r *AIPredictionRepository) Create(
 
 	return nil
 }
+
+// GetLatestByTicketID retrieves the latest AI prediction for a ticket.
+func (r *AIPredictionRepository) GetLatestByTicketID(
+	ctx context.Context,
+	ticketID string,
+) (*models.AIPrediction, error) {
+	query := `
+		SELECT
+			id,
+			ticket_id,
+			model_version,
+			category,
+			predicted_priority,
+			sentiment,
+			confidence,
+			created_at
+		FROM ai_predictions
+		WHERE ticket_id = $1
+		ORDER BY created_at DESC
+		LIMIT 1
+	`
+
+	var prediction models.AIPrediction
+
+	err := r.db.QueryRow(ctx, query, ticketID).Scan(
+		&prediction.ID,
+		&prediction.TicketID,
+		&prediction.ModelVersion,
+		&prediction.Category,
+		&prediction.PredictedPriority,
+		&prediction.Sentiment,
+		&prediction.Confidence,
+		&prediction.CreatedAt,
+	)
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to retrieve AI prediction: %w", err)
+	}
+
+	return &prediction, nil
+}
