@@ -33,14 +33,19 @@ func (m *mockAIPredictionReader) GetLatestByTicketID(
 func TestGetLatestPredictionSuccess(t *testing.T) {
 	ticketID := "8d8110dd-6840-4fda-833a-1df922221cf2"
 
+	category := "billing"
+	priority := "urgent"
+	sentiment := "negative"
+	confidence := 0.8
+
 	expectedPrediction := &models.AIPrediction{
 		ID:                "0a554678-8e7d-413b-a781-e1276aa58833",
 		TicketID:          ticketID,
 		ModelVersion:      "rules-v1",
-		Category:          "billing",
-		PredictedPriority: "urgent",
-		Sentiment:         "negative",
-		Confidence:        0.8,
+		Category:          &category,
+		PredictedPriority: &priority,
+		Sentiment:         &sentiment,
+		Confidence:        &confidence,
 		CreatedAt:         time.Now(),
 	}
 

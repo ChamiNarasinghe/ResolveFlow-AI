@@ -63,6 +63,10 @@ type mockTicketRepository struct {
 	assignCalled      bool
 	gotAssignTicketID string
 	gotAssignTeamID   *string
+
+	softDeleteError  error
+	softDeleteCalled bool
+	gotSoftDeleteID  string
 }
 
 func (m *mockTicketRepository) Create(
@@ -137,6 +141,16 @@ func (m *mockTicketRepository) AssignTeam(
 	m.gotAssignTicketID = ticketID
 	m.gotAssignTeamID = teamID
 	return m.assignResult, m.assignError
+}
+
+func (m *mockTicketRepository) SoftDelete(
+	ctx context.Context,
+	id string,
+	actorID string,
+) error {
+	m.softDeleteCalled = true
+	m.gotSoftDeleteID = id
+	return m.softDeleteError
 }
 
 // TestListTicketsDefaultPagination checks the default page and page_size.
@@ -1419,5 +1433,125 @@ func TestAssignTicketDuplicateAssignment(t *testing.T) {
 
 	if rec.Code != http.StatusOK {
 		t.Errorf("expected 200 for duplicate assignment, got %d", rec.Code)
+	}
+}
+
+// --- DeleteTicket handler tests ---
+
+const deleteTicketID = "a2f66976-199f-4ec9-8774-21f937befe13"
+
+func newDeleteRequest(ticketID string) *http.Request {
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/tickets/"+ticketID, nil)
+	req.SetPathValue("id", ticketID)
+	return req
+}
+
+func TestDeleteTicketSuccess(t *testing.T) {
+	repo := &mockTicketRepository{}
+	h := NewTicketHandler(repo)
+
+	req := newDeleteRequest(deleteTicketID)
+	req = withAdminClaims(req)
+	rec := httptest.NewRecorder()
+	h.DeleteTicket(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Errorf("expected 204, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !repo.softDeleteCalled {
+		t.Error("expected SoftDelete to be called")
+	}
+	if repo.gotSoftDeleteID != deleteTicketID {
+		t.Errorf("expected ticket ID %s, got %s", deleteTicketID, repo.gotSoftDeleteID)
+	}
+}
+
+func TestDeleteTicketUnauthenticated(t *testing.T) {
+	h := NewTicketHandler(&mockTicketRepository{})
+
+	req := newDeleteRequest(deleteTicketID)
+	// no claims
+	rec := httptest.NewRecorder()
+	h.DeleteTicket(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401, got %d", rec.Code)
+	}
+}
+
+func TestDeleteTicketNonAdmin(t *testing.T) {
+	h := NewTicketHandler(&mockTicketRepository{})
+
+	req := newDeleteRequest(deleteTicketID)
+	req = withAgentClaims(req)
+	rec := httptest.NewRecorder()
+	h.DeleteTicket(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("expected 403, got %d", rec.Code)
+	}
+}
+
+func TestDeleteTicketInvalidUUID(t *testing.T) {
+	repo := &mockTicketRepository{}
+	h := NewTicketHandler(repo)
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/tickets/not-a-uuid", nil)
+	req.SetPathValue("id", "not-a-uuid")
+	req = withAdminClaims(req)
+	rec := httptest.NewRecorder()
+	h.DeleteTicket(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", rec.Code)
+	}
+	if repo.softDeleteCalled {
+		t.Error("SoftDelete must not be called for invalid UUID")
+	}
+}
+
+func TestDeleteTicketNotFound(t *testing.T) {
+	repo := &mockTicketRepository{softDeleteError: repository.ErrTicketNotFound}
+	h := NewTicketHandler(repo)
+
+	req := newDeleteRequest(deleteTicketID)
+	req = withAdminClaims(req)
+	rec := httptest.NewRecorder()
+	h.DeleteTicket(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("expected 404, got %d", rec.Code)
+	}
+}
+
+func TestDeleteTicketAlreadyDeleted(t *testing.T) {
+	// SoftDelete returns ErrTicketNotFound for already-deleted tickets.
+	repo := &mockTicketRepository{softDeleteError: repository.ErrTicketNotFound}
+	h := NewTicketHandler(repo)
+
+	req := newDeleteRequest(deleteTicketID)
+	req = withAdminClaims(req)
+	rec := httptest.NewRecorder()
+	h.DeleteTicket(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("expected 404 for already-deleted ticket, got %d", rec.Code)
+	}
+}
+
+func TestDeleteTicketRepositoryFailure(t *testing.T) {
+	repo := &mockTicketRepository{softDeleteError: errors.New("db failure")}
+	h := NewTicketHandler(repo)
+
+	req := newDeleteRequest(deleteTicketID)
+	req = withAdminClaims(req)
+	rec := httptest.NewRecorder()
+	h.DeleteTicket(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("expected 500, got %d", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), "db failure") {
+		t.Error("response must not expose internal error details")
 	}
 }

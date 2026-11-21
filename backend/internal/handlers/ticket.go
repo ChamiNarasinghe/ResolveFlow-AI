@@ -65,6 +65,12 @@ type TicketRepository interface {
 		teamID *string,
 		actorID string,
 	) (*models.Ticket, error)
+
+	SoftDelete(
+		ctx context.Context,
+		id string,
+		actorID string,
+	) error
 }
 
 // AIClassifier defines the AI classification operation.
@@ -163,10 +169,10 @@ func (h *TicketHandler) CreateTicket(w http.ResponseWriter, r *http.Request) {
 			prediction := &models.AIPrediction{
 				TicketID:          result.ID,
 				ModelVersion:      "rules-v1",
-				Category:          classification.Category,
-				PredictedPriority: classification.Priority,
-				Sentiment:         classification.Sentiment,
-				Confidence:        classification.Confidence,
+				Category:          &classification.Category,
+				PredictedPriority: &classification.Priority,
+				Sentiment:         &classification.Sentiment,
+				Confidence:        &classification.Confidence,
 			}
 
 			if err := h.predictionRepo.Create(
@@ -429,6 +435,37 @@ func (h *TicketHandler) UpdateTicket(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewEncoder(w).Encode(result); err != nil {
 		return
 	}
+}
+
+// DeleteTicket handles DELETE /api/v1/tickets/{id}.
+// Admin only. Soft-deletes the ticket; returns 204 on success.
+func (h *TicketHandler) DeleteTicket(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.GetUserClaims(r.Context())
+	if !ok {
+		http.Error(w, `{"error":"authentication required"}`, http.StatusUnauthorized)
+		return
+	}
+	if claims.Role != "admin" {
+		http.Error(w, `{"error":"admin access required"}`, http.StatusForbidden)
+		return
+	}
+
+	id := strings.TrimSpace(r.PathValue("id"))
+	if _, err := uuid.Parse(id); err != nil {
+		http.Error(w, `{"error":"invalid ticket ID"}`, http.StatusBadRequest)
+		return
+	}
+
+	if err := h.repository.SoftDelete(r.Context(), id, claims.UserID); err != nil {
+		if errors.Is(err, repository.ErrTicketNotFound) {
+			http.Error(w, `{"error":"ticket not found"}`, http.StatusNotFound)
+			return
+		}
+		http.Error(w, `{"error":"failed to delete ticket"}`, http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // assignTicketBody is the request body for PATCH /api/v1/tickets/{id}/assignment.
