@@ -1,0 +1,37 @@
+# Dependencies
+node_modules/
+frontend/node_modules/
+
+# Next.js
+.next/
+out/
+build/
+dist/
+
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+
+# Go
+*.exe
+*.test
+*.out
+coverage/
+
+# Docker
+docker-data/
+
+# IDE and operating system
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
