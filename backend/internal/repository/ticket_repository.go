@@ -104,7 +104,21 @@ func (r *TicketRepository) List(
 ) ([]models.Ticket, int, error) {
 	offset := (page - 1) * pageSize
 
-	query := `
+	// Count total matching rows independently of the page offset so that an
+	// out-of-range page still returns the correct total.
+	var total int
+	err := r.db.QueryRow(ctx,
+		`SELECT COUNT(*)
+		   FROM tickets
+		  WHERE ($1 = '' OR status = $1)
+		    AND ($2 = '' OR priority = $2)`,
+		status, priority,
+	).Scan(&total)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to count tickets: %w", err)
+	}
+
+	rows, err := r.db.Query(ctx, `
 		SELECT
 			id,
 			ticket_number,
@@ -120,23 +134,20 @@ func (r *TicketRepository) List(
 			assigned_to,
 			created_at,
 			updated_at,
-			resolved_at,
-			COUNT(*) OVER() AS total_count
+			resolved_at
 		FROM tickets
 		WHERE ($1 = '' OR status = $1)
 		  AND ($2 = '' OR priority = $2)
 		ORDER BY created_at DESC
-		LIMIT $3 OFFSET $4
-	`
-
-	rows, err := r.db.Query(ctx, query, status, priority, pageSize, offset)
+		LIMIT $3 OFFSET $4`,
+		status, priority, pageSize, offset,
+	)
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to retrieve tickets: %w", err)
 	}
 	defer rows.Close()
 
 	var ticketsList []models.Ticket
-	var total int
 
 	for rows.Next() {
 		var ticket models.Ticket
@@ -157,7 +168,6 @@ func (r *TicketRepository) List(
 			&ticket.CreatedAt,
 			&ticket.UpdatedAt,
 			&ticket.ResolvedAt,
-			&total,
 		); err != nil {
 			return nil, 0, fmt.Errorf("failed to scan ticket: %w", err)
 		}
