@@ -10,13 +10,28 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/chami2002/resolveflow-api/internal/auth"
 	"github.com/chami2002/resolveflow-api/internal/config"
 	"github.com/chami2002/resolveflow-api/internal/database"
 	"github.com/chami2002/resolveflow-api/internal/routes"
+	"github.com/joho/godotenv"
 )
 
 func main() {
+	// Load environment variables from the project root.
+	if err := godotenv.Load("../.env"); err != nil {
+		log.Printf("Could not load .env file: %v", err)
+	}
+
 	cfg := config.Load()
+	// Initialize JWT authentication.
+	jwtService, err := auth.NewJWTService(
+		cfg.JWTSecret,
+		cfg.JWTExpiration,
+	)
+	if err != nil {
+		log.Fatalf("JWT configuration error: %v", err)
+	}
 
 	// Connect to PostgreSQL.
 	dbCtx, dbCancel := context.WithTimeout(
@@ -34,7 +49,11 @@ func main() {
 	log.Println("Successfully connected to PostgreSQL")
 
 	// Configure HTTP server.
-	router := routes.NewRouter(dbPool)
+	router := routes.NewRouter(
+		dbPool,
+		jwtService,
+		cfg.Environment == "development",
+	)
 
 	server := &http.Server{
 		Addr:         ":" + cfg.Port,

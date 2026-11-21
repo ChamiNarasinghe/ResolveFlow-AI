@@ -51,6 +51,21 @@ func (m *mockAuthUserRepository) GetByEmail(
 	return m.user, m.passwordHash, nil
 }
 
+func (m *mockAuthUserRepository) GetByID(
+	ctx context.Context,
+	userID string,
+) (*models.User, error) {
+	if m.getErr != nil {
+		return nil, m.getErr
+	}
+
+	if m.user == nil || m.user.ID != userID {
+		return nil, pgx.ErrNoRows
+	}
+
+	return m.user, nil
+}
+
 func newTestAuthService(t *testing.T, repo *mockAuthUserRepository) *AuthService {
 	t.Helper()
 

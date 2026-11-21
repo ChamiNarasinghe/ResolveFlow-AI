@@ -12,6 +12,7 @@ import (
 var (
 	ErrInvalidCredentials = errors.New("invalid email or password")
 	ErrInactiveUser       = errors.New("user account is inactive")
+	ErrUserNotFound       = errors.New("user not found")
 )
 
 type AuthUserRepository interface {
@@ -26,6 +27,11 @@ type AuthUserRepository interface {
 		ctx context.Context,
 		email string,
 	) (*models.User, string, error)
+
+	GetByID(
+		ctx context.Context,
+		userID string,
+	) (*models.User, error)
 }
 
 type AuthResponse struct {
@@ -138,4 +144,25 @@ func (s *AuthService) Login(
 		AccessToken: token,
 		TokenType:   "Bearer",
 	}, nil
+}
+
+// GetProfile retrieves the authenticated user's profile.
+func (s *AuthService) GetProfile(
+	ctx context.Context,
+	userID string,
+) (*models.User, error) {
+	user, err := s.users.GetByID(ctx, userID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrUserNotFound
+		}
+
+		return nil, fmt.Errorf("failed to retrieve user profile: %w", err)
+	}
+
+	if !user.IsActive {
+		return nil, ErrInactiveUser
+	}
+
+	return user, nil
 }
