@@ -14,6 +14,7 @@ import (
 	"github.com/chami2002/resolveflow-api/internal/auth"
 	"github.com/chami2002/resolveflow-api/internal/middleware"
 	"github.com/chami2002/resolveflow-api/internal/models"
+	"github.com/chami2002/resolveflow-api/internal/services"
 	"github.com/chami2002/resolveflow-api/internal/tickets"
 )
 
@@ -541,5 +542,163 @@ func TestUpdateTicketDatabaseError(t *testing.T) {
 
 	if recorder.Code != http.StatusInternalServerError {
 		t.Errorf("expected status 500, got %d", recorder.Code)
+	}
+}
+
+// --- AI classification tests ---
+
+type mockAIClassifier struct {
+	response *services.ClassificationResponse
+	err      error
+	// block signals the mock to block until the context is cancelled.
+	block bool
+}
+
+func (m *mockAIClassifier) ClassifyTicket(
+	ctx context.Context,
+	subject string,
+	description string,
+) (*services.ClassificationResponse, error) {
+	if m.block {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	return m.response, m.err
+}
+
+type mockPredictionRepository struct {
+	err          error
+	createCalled bool
+	got          *models.AIPrediction
+}
+
+func (m *mockPredictionRepository) Create(
+	ctx context.Context,
+	prediction *models.AIPrediction,
+) error {
+	m.createCalled = true
+	m.got = prediction
+	return m.err
+}
+
+// mockTicketRepositoryWithResult wraps mockTicketRepository and returns a
+// configured ticket from Create so AI classification tests have a real ticket.
+type mockTicketRepositoryWithResult struct {
+	mockTicketRepository
+	createResult *models.Ticket
+	createErr    error
+}
+
+func (m *mockTicketRepositoryWithResult) Create(
+	ctx context.Context,
+	req tickets.CreateTicketRequest,
+) (*models.Ticket, error) {
+	return m.createResult, m.createErr
+}
+
+func newTicketForAI() *models.Ticket {
+	return &models.Ticket{
+		ID:          "a2f66976-199f-4ec9-8774-21f937befe13",
+		Subject:     "Payment failed",
+		Description: "Transaction declined",
+	}
+}
+
+func TestCreateTicketAIClassificationSuccess(t *testing.T) {
+	repo := &mockTicketRepositoryWithResult{createResult: newTicketForAI()}
+	aiClient := &mockAIClassifier{
+		response: &services.ClassificationResponse{
+			Category:   "billing",
+			Priority:   "high",
+			Sentiment:  "negative",
+			Confidence: 0.95,
+		},
+	}
+	predRepo := &mockPredictionRepository{}
+
+	handler := NewTicketHandlerWithAI(repo, aiClient, predRepo)
+
+	body := `{"subject":"Payment failed","description":"Transaction declined","customer_name":"Jane","customer_email":"jane@example.com","channel":"web"}`
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/tickets", strings.NewReader(body))
+	recorder := httptest.NewRecorder()
+
+	handler.CreateTicket(recorder, request)
+
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if !predRepo.createCalled {
+		t.Error("expected prediction to be saved")
+	}
+	if predRepo.got.TicketID != newTicketForAI().ID {
+		t.Errorf("expected ticket ID %s, got %s", newTicketForAI().ID, predRepo.got.TicketID)
+	}
+}
+
+func TestCreateTicketAIClassificationFailureDoesNotBlockCreation(t *testing.T) {
+	repo := &mockTicketRepositoryWithResult{createResult: newTicketForAI()}
+	aiClient := &mockAIClassifier{err: errors.New("AI service unavailable")}
+	predRepo := &mockPredictionRepository{}
+
+	handler := NewTicketHandlerWithAI(repo, aiClient, predRepo)
+
+	body := `{"subject":"Payment failed","description":"Transaction declined","customer_name":"Jane","customer_email":"jane@example.com","channel":"web"}`
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/tickets", strings.NewReader(body))
+	recorder := httptest.NewRecorder()
+
+	handler.CreateTicket(recorder, request)
+
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("expected 201 even when AI fails, got %d", recorder.Code)
+	}
+	if predRepo.createCalled {
+		t.Error("prediction must not be saved when classification failed")
+	}
+}
+
+func TestCreateTicketAITimeoutDoesNotBlockCreation(t *testing.T) {
+	repo := &mockTicketRepositoryWithResult{createResult: newTicketForAI()}
+	aiClient := &mockAIClassifier{block: true}
+	predRepo := &mockPredictionRepository{}
+
+	handler := NewTicketHandlerWithAI(repo, aiClient, predRepo)
+
+	body := `{"subject":"Payment failed","description":"Transaction declined","customer_name":"Jane","customer_email":"jane@example.com","channel":"web"}`
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/tickets", strings.NewReader(body))
+	// Pre-cancel the context to simulate an immediate timeout without sleeping.
+	ctx, cancel := context.WithCancel(request.Context())
+	cancel()
+	request = request.WithContext(ctx)
+
+	recorder := httptest.NewRecorder()
+	handler.CreateTicket(recorder, request)
+
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("expected 201 even on AI timeout, got %d", recorder.Code)
+	}
+}
+
+func TestCreateTicketAIPredictionPersistenceErrorIsHandledSafely(t *testing.T) {
+	repo := &mockTicketRepositoryWithResult{createResult: newTicketForAI()}
+	aiClient := &mockAIClassifier{
+		response: &services.ClassificationResponse{
+			Category:   "billing",
+			Priority:   "medium",
+			Sentiment:  "neutral",
+			Confidence: 0.80,
+		},
+	}
+	predRepo := &mockPredictionRepository{err: errors.New("db write failed")}
+
+	handler := NewTicketHandlerWithAI(repo, aiClient, predRepo)
+
+	body := `{"subject":"Payment failed","description":"Transaction declined","customer_name":"Jane","customer_email":"jane@example.com","channel":"web"}`
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/tickets", strings.NewReader(body))
+	recorder := httptest.NewRecorder()
+
+	handler.CreateTicket(recorder, request)
+
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("expected 201 even when prediction save fails, got %d", recorder.Code)
 	}
 }

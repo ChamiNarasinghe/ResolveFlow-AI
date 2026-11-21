@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"log"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -115,8 +115,9 @@ func (h *TicketHandler) CreateTicket(w http.ResponseWriter, r *http.Request) {
 	if h.aiClient != nil && h.predictionRepo != nil {
 		aiCtx, cancel := context.WithTimeout(
 			r.Context(),
-			6*time.Second,
+			5*time.Second,
 		)
+		defer cancel()
 
 		classification, aiErr := h.aiClient.ClassifyTicket(
 			aiCtx,
@@ -124,10 +125,13 @@ func (h *TicketHandler) CreateTicket(w http.ResponseWriter, r *http.Request) {
 			result.Description,
 		)
 
-		cancel()
-
+		rid := middleware.GetRequestID(r.Context())
 		if aiErr != nil {
-			log.Printf("AI classification failed for ticket %s: %v", result.ID, aiErr)
+			slog.Warn("AI classification failed",
+				slog.String("request_id", rid),
+				slog.String("ticket_id", result.ID),
+				slog.String("error", aiErr.Error()),
+			)
 		} else {
 			prediction := &models.AIPrediction{
 				TicketID:          result.ID,
@@ -142,7 +146,11 @@ func (h *TicketHandler) CreateTicket(w http.ResponseWriter, r *http.Request) {
 				r.Context(),
 				prediction,
 			); err != nil {
-				log.Printf("Failed to save AI prediction for ticket %s: %v", result.ID, err)
+				slog.Error("Failed to save AI prediction",
+					slog.String("request_id", rid),
+					slog.String("ticket_id", result.ID),
+					slog.String("error", err.Error()),
+				)
 			}
 		}
 	}
