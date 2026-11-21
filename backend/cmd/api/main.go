@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -13,6 +14,7 @@ import (
 	"github.com/chami2002/resolveflow-api/internal/auth"
 	"github.com/chami2002/resolveflow-api/internal/config"
 	"github.com/chami2002/resolveflow-api/internal/database"
+	"github.com/chami2002/resolveflow-api/internal/logger"
 	"github.com/chami2002/resolveflow-api/internal/routes"
 	"github.com/joho/godotenv"
 )
@@ -23,14 +25,20 @@ func main() {
 		log.Printf("Could not load .env file: %v", err)
 	}
 
-	cfg := config.Load()
+	cfg, err := config.Load()
+	if err != nil {
+		log.Fatalf("Configuration error: %v", err)
+	}
+	appLog := logger.New(cfg.Environment, cfg.LogLevel)
+	slog.SetDefault(appLog)
 	// Initialize JWT authentication.
 	jwtService, err := auth.NewJWTService(
 		cfg.JWTSecret,
 		cfg.JWTExpiration,
 	)
 	if err != nil {
-		log.Fatalf("JWT configuration error: %v", err)
+		appLog.Error("JWT configuration error", slog.String("error", err.Error()))
+		os.Exit(1)
 	}
 
 	// Connect to PostgreSQL.
@@ -42,18 +50,26 @@ func main() {
 
 	dbPool, err := database.Connect(dbCtx, cfg.DatabaseURL)
 	if err != nil {
-		log.Fatalf("Database connection failed: %v", err)
+		appLog.Error("Database connection failed", slog.String("error", err.Error()))
+		os.Exit(1)
 	}
 	defer dbPool.Close()
 
-	log.Println("Successfully connected to PostgreSQL")
+	appLog.Info("Successfully connected to PostgreSQL")
+
+	// Root context — cancelled on shutdown to stop background goroutines
+	// (e.g. rate-limiter cleanup loops).
+	rootCtx, rootCancel := context.WithCancel(context.Background())
+	defer rootCancel()
 
 	// Configure HTTP server.
 	router := routes.NewRouter(
+		rootCtx,
 		dbPool,
 		jwtService,
 		cfg.Environment == "development",
 		cfg.AIServiceURL,
+		appLog,
 	)
 
 	server := &http.Server{
@@ -67,12 +83,10 @@ func main() {
 	serverErrors := make(chan error, 1)
 
 	go func() {
-		log.Printf(
-			"ResolveFlow API starting on port %s (environment: %s)",
-			cfg.Port,
-			cfg.Environment,
+		appLog.Info("ResolveFlow API starting",
+			slog.String("port", cfg.Port),
+			slog.String("environment", cfg.Environment),
 		)
-
 		serverErrors <- server.ListenAndServe()
 	}()
 
@@ -84,11 +98,12 @@ func main() {
 	select {
 	case err := <-serverErrors:
 		if !errors.Is(err, http.ErrServerClosed) {
-			log.Fatalf("Server error: %v", err)
+			appLog.Error("Server error", slog.String("error", err.Error()))
+			os.Exit(1)
 		}
 
 	case sig := <-stop:
-		log.Printf("Received signal: %v. Shutting down...", sig)
+		appLog.Info("Shutting down", slog.String("signal", sig.String()))
 
 		ctx, cancel := context.WithTimeout(
 			context.Background(),
@@ -97,9 +112,9 @@ func main() {
 		defer cancel()
 
 		if err := server.Shutdown(ctx); err != nil {
-			log.Printf("Graceful shutdown failed: %v", err)
+			appLog.Error("Graceful shutdown failed", slog.String("error", err.Error()))
 		}
 
-		log.Println("ResolveFlow API stopped")
+		appLog.Info("ResolveFlow API stopped")
 	}
 }

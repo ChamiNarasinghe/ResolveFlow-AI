@@ -1,6 +1,8 @@
 package routes
 
 import (
+	"context"
+	"log/slog"
 	"net/http"
 
 	"github.com/chami2002/resolveflow-api/internal/auth"
@@ -12,16 +14,26 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// NewRouter registers all API routes.
+// NewRouter registers all API routes. The provided ctx controls the lifecycle
+// of background goroutines (rate-limiter cleanup); cancel it on shutdown.
 func NewRouter(
+	ctx context.Context,
 	db *pgxpool.Pool,
 	jwtService *auth.JWTService,
 	allowRegistration bool,
 	aiServiceURL string,
-) *http.ServeMux {
+	log *slog.Logger,
+) http.Handler {
+	// Rate limiters — cleanup goroutines stop when ctx is cancelled.
+	// Login: 5 req/min. Registration: 3 req/min. General API: 100 req/min.
+	// Limits are per application instance (see RateLimitConfig for details).
+	loginLimiter := middleware.NewRateLimiter(ctx, middleware.RateLimitConfig{RequestsPerMinute: 5})
+	registerLimiter := middleware.NewRateLimiter(ctx, middleware.RateLimitConfig{RequestsPerMinute: 3})
+	apiLimiter := middleware.NewRateLimiter(ctx, middleware.RateLimitConfig{RequestsPerMinute: 100})
+
 	mux := http.NewServeMux()
 
-	// Health endpoints
+	// Health endpoints — no rate limiting.
 	mux.HandleFunc("GET /health", handlers.HealthHandler)
 	mux.HandleFunc("GET /health/ready", handlers.ReadinessHandler(db))
 
@@ -30,18 +42,21 @@ func NewRouter(
 	authService := auth.NewAuthService(userRepo, jwtService)
 	authHandler := handlers.NewAuthHandler(authService)
 
-	// Public login endpoint
-	mux.HandleFunc("POST /api/v1/auth/login", authHandler.Login)
+	// Public login endpoint — strict rate limit.
+	mux.Handle("POST /api/v1/auth/login",
+		loginLimiter.Limit(http.HandlerFunc(authHandler.Login)))
+
 	// JWT authentication middleware
 	authMiddleware := middleware.AuthMiddleware(jwtService)
 	mux.Handle(
 		"GET /api/v1/auth/me",
-		authMiddleware(http.HandlerFunc(authHandler.Me)),
+		apiLimiter.Limit(authMiddleware(http.HandlerFunc(authHandler.Me))),
 	)
 
 	// Registration is enabled only in development mode.
 	if allowRegistration {
-		mux.HandleFunc("POST /api/v1/auth/register", authHandler.Register)
+		mux.Handle("POST /api/v1/auth/register",
+			registerLimiter.Limit(http.HandlerFunc(authHandler.Register)))
 	}
 
 	// Ticket endpoints
@@ -50,6 +65,12 @@ func NewRouter(
 	// AI classification dependencies
 	aiClient := services.NewAIClient(aiServiceURL)
 	predictionRepo := repository.NewAIPredictionRepository(db)
+
+	// AI prediction endpoints
+	aiPredictionHandler := handlers.NewAIPredictionHandler(
+		ticketRepo,
+		predictionRepo,
+	)
 
 	ticketHandler := handlers.NewTicketHandlerWithAI(
 		ticketRepo,
@@ -67,25 +88,38 @@ func NewRouter(
 
 	mux.Handle(
 		"POST /api/v1/tickets/{id}/comments",
-		authMiddleware(http.HandlerFunc(commentHandler.CreateComment)),
+		apiLimiter.Limit(authMiddleware(http.HandlerFunc(commentHandler.CreateComment))),
 	)
 
 	mux.Handle(
 		"GET /api/v1/tickets/{id}/comments",
-		authMiddleware(http.HandlerFunc(commentHandler.ListComments)),
+		apiLimiter.Limit(authMiddleware(http.HandlerFunc(commentHandler.ListComments))),
 	)
 
 	mux.Handle("POST /api/v1/tickets",
-		authMiddleware(http.HandlerFunc(ticketHandler.CreateTicket)))
+		apiLimiter.Limit(authMiddleware(http.HandlerFunc(ticketHandler.CreateTicket))))
 
 	mux.Handle("GET /api/v1/tickets",
-		authMiddleware(http.HandlerFunc(ticketHandler.ListTickets)))
+		apiLimiter.Limit(authMiddleware(http.HandlerFunc(ticketHandler.ListTickets))))
 
 	mux.Handle("GET /api/v1/tickets/{id}",
-		authMiddleware(http.HandlerFunc(ticketHandler.GetTicket)))
+		apiLimiter.Limit(authMiddleware(http.HandlerFunc(ticketHandler.GetTicket))))
 
 	mux.Handle("PATCH /api/v1/tickets/{id}",
-		authMiddleware(http.HandlerFunc(ticketHandler.UpdateTicket)))
+		apiLimiter.Limit(authMiddleware(http.HandlerFunc(ticketHandler.UpdateTicket))))
 
-	return mux
+	mux.Handle(
+		"GET /api/v1/tickets/{id}/ai-prediction",
+		apiLimiter.Limit(authMiddleware(http.HandlerFunc(aiPredictionHandler.GetLatestPrediction))),
+	)
+
+	// Global middleware chain: RequestID → RequestLogger → Recovery → mux.
+	// RequestID runs first so every log line and panic log carries the ID.
+	// RequestLogger wraps Recovery so its deferred log always executes, even
+	// when Recovery catches a panic and writes the 500 response.
+	return middleware.RequestID(
+		middleware.RequestLogger(log)(
+			middleware.Recovery(log)(mux),
+		),
+	)
 }
