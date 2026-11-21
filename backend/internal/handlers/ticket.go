@@ -23,6 +23,7 @@ type TicketRepository interface {
 	Create(
 		ctx context.Context,
 		req tickets.CreateTicketRequest,
+		creatorID string,
 	) (*models.Ticket, error)
 
 	List(
@@ -90,6 +91,12 @@ func NewTicketHandlerWithAI(
 }
 
 func (h *TicketHandler) CreateTicket(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.GetUserClaims(r.Context())
+	if !ok {
+		http.Error(w, `{"error":"authentication required"}`, http.StatusUnauthorized)
+		return
+	}
+
 	var request tickets.CreateTicketRequest
 
 	decoder := json.NewDecoder(r.Body)
@@ -105,7 +112,7 @@ func (h *TicketHandler) CreateTicket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := h.repository.Create(r.Context(), request)
+	result, err := h.repository.Create(r.Context(), request, claims.UserID)
 	if err != nil {
 		http.Error(w, "Failed to create ticket", http.StatusInternalServerError)
 		return

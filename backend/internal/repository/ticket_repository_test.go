@@ -81,6 +81,7 @@ func TestTicketRepositoryCreate(t *testing.T) {
 	repo, pool := setupTestRepository(t)
 
 	ctx := context.Background()
+	actorID := createTestUser(t, pool)
 
 	request := tickets.CreateTicketRequest{
 		Subject:       "Integration test payment issue",
@@ -90,7 +91,7 @@ func TestTicketRepositoryCreate(t *testing.T) {
 		Channel:       "web",
 	}
 
-	result, err := repo.Create(ctx, request)
+	result, err := repo.Create(ctx, request, actorID)
 	if err != nil {
 		t.Fatalf("failed to create ticket: %v", err)
 	}
@@ -115,6 +116,10 @@ func TestTicketRepositoryCreate(t *testing.T) {
 		t.Errorf("unexpected subject: %s", result.Subject)
 	}
 
+	if result.CreatedBy == nil || *result.CreatedBy != actorID {
+		t.Errorf("expected created_by %s, got %v", actorID, result.CreatedBy)
+	}
+
 	// Remove the test record after verification.
 	_, err = pool.Exec(ctx, "DELETE FROM tickets WHERE id = $1", result.ID)
 	if err != nil {
@@ -123,7 +128,8 @@ func TestTicketRepositoryCreate(t *testing.T) {
 }
 
 func TestTicketRepositoryCreateDatabaseError(t *testing.T) {
-	repo, _ := setupTestRepository(t)
+	repo, pool := setupTestRepository(t)
+	actorID := createTestUser(t, pool)
 
 	request := tickets.CreateTicketRequest{
 		Subject:       "Invalid channel test",
@@ -133,7 +139,7 @@ func TestTicketRepositoryCreateDatabaseError(t *testing.T) {
 		Channel:       "fax",
 	}
 
-	result, err := repo.Create(context.Background(), request)
+	result, err := repo.Create(context.Background(), request, actorID)
 
 	if err == nil {
 		t.Fatal("expected database error for invalid channel")
@@ -151,6 +157,8 @@ func createTicketForUpdateTest(
 ) string {
 	t.Helper()
 
+	actorID := createTestUser(t, pool)
+
 	request := tickets.CreateTicketRequest{
 		Subject:       "Ticket update integration test",
 		Description:   "Testing PostgreSQL ticket updates.",
@@ -159,7 +167,7 @@ func createTicketForUpdateTest(
 		Channel:       "web",
 	}
 
-	ticket, err := repo.Create(context.Background(), request)
+	ticket, err := repo.Create(context.Background(), request, actorID)
 	if err != nil {
 		t.Fatalf("failed to create test ticket: %v", err)
 	}

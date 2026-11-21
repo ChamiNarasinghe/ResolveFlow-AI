@@ -51,6 +51,7 @@ type mockTicketRepository struct {
 func (m *mockTicketRepository) Create(
 	ctx context.Context,
 	req tickets.CreateTicketRequest,
+	creatorID string,
 ) (*models.Ticket, error) {
 	return nil, nil
 }
@@ -587,12 +588,15 @@ type mockTicketRepositoryWithResult struct {
 	mockTicketRepository
 	createResult *models.Ticket
 	createErr    error
+	gotCreatorID string
 }
 
 func (m *mockTicketRepositoryWithResult) Create(
 	ctx context.Context,
 	req tickets.CreateTicketRequest,
+	creatorID string,
 ) (*models.Ticket, error) {
+	m.gotCreatorID = creatorID
 	return m.createResult, m.createErr
 }
 
@@ -620,6 +624,7 @@ func TestCreateTicketAIClassificationSuccess(t *testing.T) {
 
 	body := `{"subject":"Payment failed","description":"Transaction declined","customer_name":"Jane","customer_email":"jane@example.com","channel":"web"}`
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/tickets", strings.NewReader(body))
+	request = withTestClaims(request)
 	recorder := httptest.NewRecorder()
 
 	handler.CreateTicket(recorder, request)
@@ -644,6 +649,7 @@ func TestCreateTicketAIClassificationFailureDoesNotBlockCreation(t *testing.T) {
 
 	body := `{"subject":"Payment failed","description":"Transaction declined","customer_name":"Jane","customer_email":"jane@example.com","channel":"web"}`
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/tickets", strings.NewReader(body))
+	request = withTestClaims(request)
 	recorder := httptest.NewRecorder()
 
 	handler.CreateTicket(recorder, request)
@@ -665,6 +671,7 @@ func TestCreateTicketAITimeoutDoesNotBlockCreation(t *testing.T) {
 
 	body := `{"subject":"Payment failed","description":"Transaction declined","customer_name":"Jane","customer_email":"jane@example.com","channel":"web"}`
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/tickets", strings.NewReader(body))
+	request = withTestClaims(request)
 	// Pre-cancel the context to simulate an immediate timeout without sleeping.
 	ctx, cancel := context.WithCancel(request.Context())
 	cancel()
@@ -694,11 +701,75 @@ func TestCreateTicketAIPredictionPersistenceErrorIsHandledSafely(t *testing.T) {
 
 	body := `{"subject":"Payment failed","description":"Transaction declined","customer_name":"Jane","customer_email":"jane@example.com","channel":"web"}`
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/tickets", strings.NewReader(body))
+	request = withTestClaims(request)
 	recorder := httptest.NewRecorder()
 
 	handler.CreateTicket(recorder, request)
 
 	if recorder.Code != http.StatusCreated {
 		t.Fatalf("expected 201 even when prediction save fails, got %d", recorder.Code)
+	}
+}
+
+// --- Creator tracking tests ---
+
+func TestCreateTicketRequiresAuthentication(t *testing.T) {
+	repo := &mockTicketRepositoryWithResult{createResult: newTicketForAI()}
+	handler := NewTicketHandler(repo)
+
+	body := `{"subject":"Test","description":"Desc","customer_name":"Jane","customer_email":"jane@example.com","channel":"web"}`
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/tickets", strings.NewReader(body))
+	recorder := httptest.NewRecorder()
+
+	handler.CreateTicket(recorder, request)
+
+	if recorder.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401, got %d", recorder.Code)
+	}
+}
+
+func TestCreateTicketStoresCreatorID(t *testing.T) {
+	creatorID := "user-uuid-1234"
+	ticket := newTicketForAI()
+	ticket.CreatedBy = &creatorID
+
+	repo := &mockTicketRepositoryWithResult{createResult: ticket}
+	handler := NewTicketHandler(repo)
+
+	body := `{"subject":"Payment failed","description":"Transaction declined","customer_name":"Jane","customer_email":"jane@example.com","channel":"web"}`
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/tickets", strings.NewReader(body))
+	claims := &auth.Claims{UserID: creatorID, Email: "agent@example.com", Role: "agent"}
+	request = request.WithContext(middleware.SetUserClaims(request.Context(), claims))
+	recorder := httptest.NewRecorder()
+
+	handler.CreateTicket(recorder, request)
+
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if repo.gotCreatorID != creatorID {
+		t.Errorf("expected creatorID %s, got %s", creatorID, repo.gotCreatorID)
+	}
+}
+
+func TestCreateTicketClientCannotOverrideCreatorID(t *testing.T) {
+	creatorID := "real-user-uuid"
+	ticket := newTicketForAI()
+	ticket.CreatedBy = &creatorID
+
+	repo := &mockTicketRepositoryWithResult{createResult: ticket}
+	handler := NewTicketHandler(repo)
+
+	// Body includes a created_by field — DisallowUnknownFields must reject it.
+	body := `{"subject":"Test","description":"Desc","customer_name":"Jane","customer_email":"jane@example.com","channel":"web","created_by":"attacker-uuid"}`
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/tickets", strings.NewReader(body))
+	claims := &auth.Claims{UserID: creatorID, Email: "agent@example.com", Role: "agent"}
+	request = request.WithContext(middleware.SetUserClaims(request.Context(), claims))
+	recorder := httptest.NewRecorder()
+
+	handler.CreateTicket(recorder, request)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 when created_by is in body, got %d", recorder.Code)
 	}
 }

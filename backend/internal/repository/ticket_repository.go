@@ -26,6 +26,7 @@ func NewTicketRepository(db *pgxpool.Pool) *TicketRepository {
 func (r *TicketRepository) Create(
 	ctx context.Context,
 	req tickets.CreateTicketRequest,
+	creatorID string,
 ) (*models.Ticket, error) {
 	query := `
 		INSERT INTO tickets (
@@ -33,9 +34,10 @@ func (r *TicketRepository) Create(
 			description,
 			customer_name,
 			customer_email,
-			channel
+			channel,
+			created_by
 		)
-		VALUES ($1, $2, $3, $4, $5)
+		VALUES ($1, $2, $3, $4, $5, $6)
 		RETURNING
 			id,
 			ticket_number,
@@ -49,6 +51,7 @@ func (r *TicketRepository) Create(
 			category,
 			assigned_team_id,
 			assigned_to,
+			created_by,
 			created_at,
 			updated_at,
 			resolved_at
@@ -64,6 +67,7 @@ func (r *TicketRepository) Create(
 		req.CustomerName,
 		req.CustomerEmail,
 		req.Channel,
+		creatorID,
 	).Scan(
 		&ticket.ID,
 		&ticket.TicketNumber,
@@ -77,6 +81,7 @@ func (r *TicketRepository) Create(
 		&ticket.Category,
 		&ticket.AssignedTeamID,
 		&ticket.AssignedTo,
+		&ticket.CreatedBy,
 		&ticket.CreatedAt,
 		&ticket.UpdatedAt,
 		&ticket.ResolvedAt,
