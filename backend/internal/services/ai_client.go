@@ -15,6 +15,9 @@ import (
 // values outside the known allowed sets.
 var ErrInvalidClassification = errors.New("invalid AI classification response")
 
+// ErrAIUnauthorized is returned when the AI service responds with HTTP 401 or 403.
+var ErrAIUnauthorized = errors.New("AI service request unauthorized")
+
 var (
 	validCategories = map[string]bool{"billing": true, "technical_support": true, "account": true, "general_inquiry": true}
 	validPriorities = map[string]bool{"low": true, "medium": true, "high": true, "urgent": true}
@@ -23,6 +26,7 @@ var (
 
 type AIClient struct {
 	baseURL    string
+	apiKey     string
 	httpClient *http.Client
 }
 
@@ -55,13 +59,31 @@ func (c *ClassificationResponse) Validate() error {
 	return nil
 }
 
-func NewAIClient(baseURL string) *AIClient {
+func NewAIClient(baseURL string, apiKey string) *AIClient {
 	return &AIClient{
 		baseURL: strings.TrimRight(baseURL, "/"),
+		apiKey:  apiKey,
 		httpClient: &http.Client{
 			Timeout: 5 * time.Second,
 		},
 	}
+}
+
+// Ping calls the AI service /health endpoint to verify reachability.
+func (c *AIClient) Ping(ctx context.Context) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/health", nil)
+	if err != nil {
+		return fmt.Errorf("create AI ping request: %w", err)
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("AI service unreachable: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("AI service health returned status %d", resp.StatusCode)
+	}
+	return nil
 }
 
 func (c *AIClient) ClassifyTicket(
@@ -94,6 +116,9 @@ func (c *AIClient) ClassifyTicket(
 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
+	if c.apiKey != "" {
+		req.Header.Set("X-API-Key", c.apiKey)
+	}
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -101,6 +126,9 @@ func (c *AIClient) ClassifyTicket(
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return nil, ErrAIUnauthorized
+	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf(
 			"AI service returned status %d",

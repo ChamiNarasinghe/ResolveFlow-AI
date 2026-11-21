@@ -22,6 +22,7 @@ func NewRouter(
 	jwtService *auth.JWTService,
 	allowRegistration bool,
 	aiServiceURL string,
+	aiServiceAPIKey string,
 	log *slog.Logger,
 ) http.Handler {
 	// Rate limiters — cleanup goroutines stop when ctx is cancelled.
@@ -36,6 +37,7 @@ func NewRouter(
 	// Health endpoints — no rate limiting.
 	mux.HandleFunc("GET /health", handlers.HealthHandler)
 	mux.HandleFunc("GET /health/ready", handlers.ReadinessHandler(db))
+	mux.HandleFunc("GET /health/ai", handlers.AIReadinessHandler(services.NewAIClient(aiServiceURL, aiServiceAPIKey)))
 
 	// Authentication services
 	userRepo := users.NewUserRepository(db)
@@ -59,11 +61,14 @@ func NewRouter(
 			registerLimiter.Limit(http.HandlerFunc(authHandler.Register)))
 	}
 
+	// Shared middleware
+	adminOnly := middleware.RequireRoles("admin")
+
 	// Ticket endpoints
 	ticketRepo := repository.NewTicketRepository(db)
 
 	// AI classification dependencies
-	aiClient := services.NewAIClient(aiServiceURL)
+	aiClient := services.NewAIClient(aiServiceURL, aiServiceAPIKey)
 	predictionRepo := repository.NewAIPredictionRepository(db)
 
 	// AI prediction endpoints
@@ -108,6 +113,9 @@ func NewRouter(
 	mux.Handle("PATCH /api/v1/tickets/{id}",
 		apiLimiter.Limit(authMiddleware(http.HandlerFunc(ticketHandler.UpdateTicket))))
 
+	mux.Handle("DELETE /api/v1/tickets/{id}",
+		apiLimiter.Limit(authMiddleware(adminOnly(http.HandlerFunc(ticketHandler.DeleteTicket)))))
+
 	mux.Handle(
 		"GET /api/v1/tickets/{id}/history",
 		apiLimiter.Limit(authMiddleware(http.HandlerFunc(ticketHandler.GetTicketHistory))),
@@ -121,7 +129,11 @@ func NewRouter(
 	// Team endpoints
 	teamRepo := repository.NewTeamRepository(db)
 	teamHandler := handlers.NewTeamHandler(teamRepo)
-	adminOnly := middleware.RequireRoles("admin")
+
+	// Admin user provisioning
+	adminHandler := handlers.NewAdminHandler(authService)
+	mux.Handle("POST /api/v1/admin/users",
+		apiLimiter.Limit(authMiddleware(adminOnly(http.HandlerFunc(adminHandler.CreateUser)))))
 
 	mux.Handle(
 		"PATCH /api/v1/tickets/{id}/assignment",

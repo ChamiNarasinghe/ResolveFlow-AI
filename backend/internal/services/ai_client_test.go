@@ -49,7 +49,7 @@ func TestAIClientClassifyTicket(t *testing.T) {
 
 	defer server.Close()
 
-	client := NewAIClient(server.URL)
+	client := NewAIClient(server.URL, "")
 
 	result, err := client.ClassifyTicket(
 		context.Background(),
@@ -87,7 +87,7 @@ func TestAIClientHandlesServerError(t *testing.T) {
 
 	defer server.Close()
 
-	client := NewAIClient(server.URL)
+	client := NewAIClient(server.URL, "")
 
 	_, err := client.ClassifyTicket(
 		context.Background(),
@@ -108,7 +108,7 @@ func TestAIClientRejectsUnknownCategory(t *testing.T) {
 	}))
 	defer server.Close()
 
-	_, err := NewAIClient(server.URL).ClassifyTicket(context.Background(), "s", "d")
+	_, err := NewAIClient(server.URL, "").ClassifyTicket(context.Background(), "s", "d")
 	if !errors.Is(err, ErrInvalidClassification) {
 		t.Errorf("expected ErrInvalidClassification, got %v", err)
 	}
@@ -122,7 +122,7 @@ func TestAIClientRejectsUnknownPriority(t *testing.T) {
 	}))
 	defer server.Close()
 
-	_, err := NewAIClient(server.URL).ClassifyTicket(context.Background(), "s", "d")
+	_, err := NewAIClient(server.URL, "").ClassifyTicket(context.Background(), "s", "d")
 	if !errors.Is(err, ErrInvalidClassification) {
 		t.Errorf("expected ErrInvalidClassification, got %v", err)
 	}
@@ -136,7 +136,7 @@ func TestAIClientRejectsUnknownSentiment(t *testing.T) {
 	}))
 	defer server.Close()
 
-	_, err := NewAIClient(server.URL).ClassifyTicket(context.Background(), "s", "d")
+	_, err := NewAIClient(server.URL, "").ClassifyTicket(context.Background(), "s", "d")
 	if !errors.Is(err, ErrInvalidClassification) {
 		t.Errorf("expected ErrInvalidClassification, got %v", err)
 	}
@@ -150,9 +150,67 @@ func TestAIClientRejectsOutOfRangeConfidence(t *testing.T) {
 	}))
 	defer server.Close()
 
-	_, err := NewAIClient(server.URL).ClassifyTicket(context.Background(), "s", "d")
+	_, err := NewAIClient(server.URL, "").ClassifyTicket(context.Background(), "s", "d")
 	if !errors.Is(err, ErrInvalidClassification) {
 		t.Errorf("expected ErrInvalidClassification, got %v", err)
+	}
+}
+
+func TestAIClientSendsAPIKeyHeader(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-API-Key") != "secret-key" {
+			t.Errorf("expected X-API-Key: secret-key, got %q", r.Header.Get("X-API-Key"))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"category":"billing","priority":"high","sentiment":"negative","confidence":0.9}`))
+	}))
+	defer server.Close()
+
+	_, err := NewAIClient(server.URL, "secret-key").ClassifyTicket(context.Background(), "s", "d")
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestAIClientOmitsAPIKeyHeaderWhenEmpty(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-API-Key") != "" {
+			t.Errorf("expected no X-API-Key header, got %q", r.Header.Get("X-API-Key"))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"category":"billing","priority":"high","sentiment":"negative","confidence":0.9}`))
+	}))
+	defer server.Close()
+
+	_, err := NewAIClient(server.URL, "").ClassifyTicket(context.Background(), "s", "d")
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestAIClientReturnsErrAIUnauthorizedOn401(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
+	_, err := NewAIClient(server.URL, "bad-key").ClassifyTicket(context.Background(), "s", "d")
+	if !errors.Is(err, ErrAIUnauthorized) {
+		t.Errorf("expected ErrAIUnauthorized, got %v", err)
+	}
+}
+
+func TestAIClientReturnsErrAIUnauthorizedOn403(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer server.Close()
+
+	_, err := NewAIClient(server.URL, "bad-key").ClassifyTicket(context.Background(), "s", "d")
+	if !errors.Is(err, ErrAIUnauthorized) {
+		t.Errorf("expected ErrAIUnauthorized, got %v", err)
 	}
 }
 
