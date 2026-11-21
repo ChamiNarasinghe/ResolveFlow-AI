@@ -16,6 +16,7 @@ import (
 	"github.com/chami2002/resolveflow-api/internal/database"
 	"github.com/chami2002/resolveflow-api/internal/logger"
 	"github.com/chami2002/resolveflow-api/internal/routes"
+	"github.com/chami2002/resolveflow-api/internal/users"
 	"github.com/joho/godotenv"
 )
 
@@ -57,6 +58,37 @@ func main() {
 
 	appLog.Info("Successfully connected to PostgreSQL")
 
+	// One-time admin bootstrap — only runs when all three BOOTSTRAP_ADMIN_*
+	// environment variables are set. Silently skips if an admin already exists.
+	// Fails fast with a clear error if only some variables are set.
+	bootName := cfg.BootstrapAdminName
+	bootEmail := cfg.BootstrapAdminEmail
+	bootPass := cfg.BootstrapAdminPass
+	bootVarsSet := (bootName != "") || (bootEmail != "") || (bootPass != "")
+	bootVarsComplete := (bootName != "") && (bootEmail != "") && (bootPass != "")
+
+	if bootVarsSet && !bootVarsComplete {
+		appLog.Error("Bootstrap configuration is incomplete: set all three of BOOTSTRAP_ADMIN_NAME, BOOTSTRAP_ADMIN_EMAIL, BOOTSTRAP_ADMIN_PASSWORD or none of them")
+		os.Exit(1)
+	}
+
+	if bootVarsComplete {
+		userRepo := users.NewUserRepository(dbPool)
+		authSvc := auth.NewAuthService(userRepo, jwtService)
+		bootCtx, bootCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer bootCancel()
+		_, bootErr := authSvc.Bootstrap(bootCtx, bootName, bootEmail, bootPass)
+		switch {
+		case bootErr == nil:
+			appLog.Info("Bootstrap: initial administrator account created",
+				slog.String("email", bootEmail))
+		case errors.Is(bootErr, auth.ErrAdminExists):
+			appLog.Info("Bootstrap: administrator already exists, skipping")
+		default:
+			appLog.Error("Bootstrap failed", slog.String("error", bootErr.Error()))
+			os.Exit(1)
+		}
+	}
 	// Root context — cancelled on shutdown to stop background goroutines
 	// (e.g. rate-limiter cleanup loops).
 	rootCtx, rootCancel := context.WithCancel(context.Background())
@@ -69,6 +101,7 @@ func main() {
 		jwtService,
 		cfg.Environment == "development",
 		cfg.AIServiceURL,
+		cfg.AIServiceAPIKey,
 		appLog,
 	)
 
