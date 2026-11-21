@@ -1,0 +1,25 @@
+# syntax=docker/dockerfile:1
+
+FROM python:3.13-slim AS runtime
+
+# Create a non-root user before installing anything.
+RUN groupadd -r appgroup && useradd -r -g appgroup appuser
+
+WORKDIR /app
+
+# Install dependencies as root, then hand ownership to appuser.
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy application source.
+COPY app/ ./app/
+
+RUN chown -R appuser:appgroup /app
+USER appuser
+
+EXPOSE 8001
+
+HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')" || exit 1
+
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8001"]

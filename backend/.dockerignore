@@ -1,0 +1,19 @@
+# Test and coverage artifacts
+**/*_test.go
+coverage.out
+tests/
+
+# Local build outputs
+*.exe
+*.test
+*.out
+
+# IDE and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Git
+.git/
+.gitignore

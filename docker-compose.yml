@@ -1,17 +1,20 @@
-
 services:
+
+  # ── PostgreSQL ───────────────────────────────────────────────────────────────
   postgres:
     image: postgres:17
     container_name: resolveflow-postgres
     restart: unless-stopped
     environment:
-      POSTGRES_DB: ${POSTGRES_DB:-resolveflow_db}
-      POSTGRES_USER: ${POSTGRES_USER:-resolveflow_user}
+      POSTGRES_DB:       ${POSTGRES_DB:-resolveflow_db}
+      POSTGRES_USER:     ${POSTGRES_USER:-resolveflow_user}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
     ports:
       - "5433:5432"
     volumes:
       - resolveflow_postgres_data:/var/lib/postgresql/data
+    networks:
+      - resolveflow-net
     healthcheck:
       test:
         - CMD-SHELL
@@ -20,6 +23,69 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
+
+  # ── AI service ───────────────────────────────────────────────────────────────
+  ai-service:
+    build:
+      context: ./ai-service
+      dockerfile: Dockerfile
+    image: resolveflow-ai-service:latest
+    container_name: resolveflow-ai-service
+    restart: unless-stopped
+    environment:
+      AI_SERVICE_API_KEY: ${AI_SERVICE_API_KEY:-}
+    ports:
+      - "8001:8001"
+    networks:
+      - resolveflow-net
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - python -c "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # ── Go backend ───────────────────────────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: resolveflow-backend:latest
+    container_name: resolveflow-backend
+    restart: unless-stopped
+    environment:
+      APP_ENV:            ${APP_ENV:-production}
+      PORT:               ${PORT:-8080}
+      LOG_LEVEL:          ${LOG_LEVEL:-info}
+      DATABASE_URL:       postgres://${POSTGRES_USER:-resolveflow_user}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-resolveflow_db}?sslmode=disable
+      JWT_SECRET:         ${JWT_SECRET:?Set JWT_SECRET in .env}
+      JWT_EXPIRATION_MINUTES: ${JWT_EXPIRATION_MINUTES:-15}
+      AI_SERVICE_URL:     http://ai-service:8001
+      AI_SERVICE_API_KEY: ${AI_SERVICE_API_KEY:-}
+      BOOTSTRAP_ADMIN_NAME:     ${BOOTSTRAP_ADMIN_NAME:-}
+      BOOTSTRAP_ADMIN_EMAIL:    ${BOOTSTRAP_ADMIN_EMAIL:-}
+      BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:-}
+    ports:
+      - "8080:8080"
+    networks:
+      - resolveflow-net
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - wget -qO- http://localhost:8080/health || exit 1
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+networks:
+  resolveflow-net:
+    driver: bridge
 
 volumes:
   resolveflow_postgres_data:
