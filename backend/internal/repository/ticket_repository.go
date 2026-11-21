@@ -94,17 +94,15 @@ func (r *TicketRepository) Create(
 	return &ticket, nil
 }
 
-// List retrieves all tickets, ordered from newest to oldest.
-
-// List retrieves tickets with pagination and optional filters.
+// List retrieves a page of tickets and the total matching count.
 func (r *TicketRepository) List(
 	ctx context.Context,
 	page int,
-	limit int,
+	pageSize int,
 	status string,
 	priority string,
-) ([]models.Ticket, error) {
-	offset := (page - 1) * limit
+) ([]models.Ticket, int, error) {
+	offset := (page - 1) * pageSize
 
 	query := `
 		SELECT
@@ -122,7 +120,8 @@ func (r *TicketRepository) List(
 			assigned_to,
 			created_at,
 			updated_at,
-			resolved_at
+			resolved_at,
+			COUNT(*) OVER() AS total_count
 		FROM tickets
 		WHERE ($1 = '' OR status = $1)
 		  AND ($2 = '' OR priority = $2)
@@ -130,25 +129,19 @@ func (r *TicketRepository) List(
 		LIMIT $3 OFFSET $4
 	`
 
-	rows, err := r.db.Query(
-		ctx,
-		query,
-		status,
-		priority,
-		limit,
-		offset,
-	)
+	rows, err := r.db.Query(ctx, query, status, priority, pageSize, offset)
 	if err != nil {
-		return nil, fmt.Errorf("failed to retrieve tickets: %w", err)
+		return nil, 0, fmt.Errorf("failed to retrieve tickets: %w", err)
 	}
 	defer rows.Close()
 
 	var ticketsList []models.Ticket
+	var total int
 
 	for rows.Next() {
 		var ticket models.Ticket
 
-		err := rows.Scan(
+		if err := rows.Scan(
 			&ticket.ID,
 			&ticket.TicketNumber,
 			&ticket.Subject,
@@ -164,19 +157,19 @@ func (r *TicketRepository) List(
 			&ticket.CreatedAt,
 			&ticket.UpdatedAt,
 			&ticket.ResolvedAt,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("failed to scan ticket: %w", err)
+			&total,
+		); err != nil {
+			return nil, 0, fmt.Errorf("failed to scan ticket: %w", err)
 		}
 
 		ticketsList = append(ticketsList, ticket)
 	}
 
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("failed to iterate tickets: %w", err)
+		return nil, 0, fmt.Errorf("failed to iterate tickets: %w", err)
 	}
 
-	return ticketsList, nil
+	return ticketsList, total, nil
 }
 
 // GetByID retrieves a ticket using its UUID.
@@ -415,6 +408,168 @@ func (r *TicketRepository) Update(
 	}
 
 	return &ticket, nil
+}
+
+// GetHistoryByTicketID retrieves paginated audit history for a ticket, newest first.
+func (r *TicketRepository) GetHistoryByTicketID(
+	ctx context.Context,
+	ticketID string,
+	page int,
+	pageSize int,
+) ([]models.TicketHistory, error) {
+	offset := (page - 1) * pageSize
+
+	rows, err := r.db.Query(ctx, `
+		SELECT id, ticket_id, actor_id, action, old_value, new_value, created_at
+		FROM ticket_history
+		WHERE ticket_id = $1::uuid
+		ORDER BY created_at DESC
+		LIMIT $2 OFFSET $3`,
+		ticketID, pageSize, offset,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query ticket history: %w", err)
+	}
+	defer rows.Close()
+
+	var records []models.TicketHistory
+	for rows.Next() {
+		var h models.TicketHistory
+		if err := rows.Scan(
+			&h.ID, &h.TicketID, &h.ActorID, &h.Action, &h.OldValue, &h.NewValue, &h.CreatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("failed to scan history row: %w", err)
+		}
+		records = append(records, h)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to iterate history rows: %w", err)
+	}
+
+	return records, nil
+}
+
+// ErrTicketNotFound is returned when a ticket lookup finds no row.
+var ErrTicketNotFound = errors.New("ticket not found")
+
+// AssignTeam updates assigned_team_id for a ticket inside a transaction and
+// records a ticket.assigned or ticket.unassigned history entry.
+// Passing nil teamID unassigns the ticket.
+// If the ticket is already assigned to the same team, no change is made and
+// no history record is written.
+func (r *TicketRepository) AssignTeam(
+	ctx context.Context,
+	ticketID string,
+	teamID *string,
+	actorID string,
+) (*models.Ticket, error) {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+
+	// Lock the row and read the current assigned_team_id.
+	var current models.Ticket
+	err = tx.QueryRow(ctx,
+		`SELECT id, ticket_number, subject, description, customer_name, customer_email,
+		        status, priority, channel, category, assigned_team_id, assigned_to,
+		        created_by, created_at, updated_at, resolved_at
+		   FROM tickets WHERE id = $1::uuid FOR UPDATE`, ticketID,
+	).Scan(
+		&current.ID, &current.TicketNumber, &current.Subject, &current.Description,
+		&current.CustomerName, &current.CustomerEmail, &current.Status, &current.Priority,
+		&current.Channel, &current.Category, &current.AssignedTeamID, &current.AssignedTo,
+		&current.CreatedBy, &current.CreatedAt, &current.UpdatedAt, &current.ResolvedAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrTicketNotFound
+		}
+		return nil, fmt.Errorf("failed to lock ticket: %w", err)
+	}
+
+	// No-op: same team already assigned.
+	if stringPtrEqual(current.AssignedTeamID, teamID) {
+		return &current, nil
+	}
+
+	// Verify the team exists when assigning (not when unassigning).
+	if teamID != nil {
+		var exists bool
+		if err := tx.QueryRow(ctx,
+			`SELECT EXISTS(SELECT 1 FROM teams WHERE id = $1::uuid)`, *teamID,
+		).Scan(&exists); err != nil {
+			return nil, fmt.Errorf("failed to verify team: %w", err)
+		}
+		if !exists {
+			return nil, ErrTeamNotFound
+		}
+	}
+
+	// Update the ticket.
+	var updated models.Ticket
+	err = tx.QueryRow(ctx,
+		`UPDATE tickets SET assigned_team_id = $2, updated_at = NOW()
+		  WHERE id = $1::uuid
+		  RETURNING id, ticket_number, subject, description, customer_name, customer_email,
+		            status, priority, channel, category, assigned_team_id, assigned_to,
+		            created_by, created_at, updated_at, resolved_at`,
+		ticketID, teamID,
+	).Scan(
+		&updated.ID, &updated.TicketNumber, &updated.Subject, &updated.Description,
+		&updated.CustomerName, &updated.CustomerEmail, &updated.Status, &updated.Priority,
+		&updated.Channel, &updated.Category, &updated.AssignedTeamID, &updated.AssignedTo,
+		&updated.CreatedBy, &updated.CreatedAt, &updated.UpdatedAt, &updated.ResolvedAt,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to update ticket assignment: %w", err)
+	}
+
+	action := "ticket.assigned"
+	if teamID == nil {
+		action = "ticket.unassigned"
+	}
+
+	oldJSON, err := json.Marshal(map[string]any{"assigned_team_id": current.AssignedTeamID})
+	if err != nil {
+		return nil, fmt.Errorf("failed to serialize audit old_value: %w", err)
+	}
+	newJSON, err := json.Marshal(map[string]any{"assigned_team_id": updated.AssignedTeamID})
+	if err != nil {
+		return nil, fmt.Errorf("failed to serialize audit new_value: %w", err)
+	}
+
+	_, err = tx.Exec(ctx,
+		`INSERT INTO ticket_history (ticket_id, actor_id, action, old_value, new_value)
+		 VALUES ($1, $2, $3, $4, $5)`,
+		ticketID, actorID, action, oldJSON, newJSON,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to insert audit history: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	return &updated, nil
+}
+
+// CountHistoryByTicketID returns the total number of history records for a ticket.
+func (r *TicketRepository) CountHistoryByTicketID(
+	ctx context.Context,
+	ticketID string,
+) (int, error) {
+	var count int
+	err := r.db.QueryRow(ctx,
+		`SELECT COUNT(*) FROM ticket_history WHERE ticket_id = $1::uuid`,
+		ticketID,
+	).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("failed to count ticket history: %w", err)
+	}
+	return count, nil
 }
 
 // stringPtrEqual compares two nullable strings for equality.

@@ -109,9 +109,45 @@ func NewRouter(
 		apiLimiter.Limit(authMiddleware(http.HandlerFunc(ticketHandler.UpdateTicket))))
 
 	mux.Handle(
+		"GET /api/v1/tickets/{id}/history",
+		apiLimiter.Limit(authMiddleware(http.HandlerFunc(ticketHandler.GetTicketHistory))),
+	)
+
+	mux.Handle(
 		"GET /api/v1/tickets/{id}/ai-prediction",
 		apiLimiter.Limit(authMiddleware(http.HandlerFunc(aiPredictionHandler.GetLatestPrediction))),
 	)
+
+	// Team endpoints
+	teamRepo := repository.NewTeamRepository(db)
+	teamHandler := handlers.NewTeamHandler(teamRepo)
+	adminOnly := middleware.RequireRoles("admin")
+
+	mux.Handle(
+		"PATCH /api/v1/tickets/{id}/assignment",
+		apiLimiter.Limit(authMiddleware(adminOnly(http.HandlerFunc(ticketHandler.AssignTicket)))),
+	)
+
+	mux.Handle("POST /api/v1/teams",
+		apiLimiter.Limit(authMiddleware(adminOnly(http.HandlerFunc(teamHandler.CreateTeam)))))
+
+	mux.Handle("GET /api/v1/teams",
+		apiLimiter.Limit(authMiddleware(http.HandlerFunc(teamHandler.ListTeams))))
+
+	mux.Handle("GET /api/v1/teams/{id}",
+		apiLimiter.Limit(authMiddleware(http.HandlerFunc(teamHandler.GetTeam))))
+
+	mux.Handle("PATCH /api/v1/teams/{id}",
+		apiLimiter.Limit(authMiddleware(adminOnly(http.HandlerFunc(teamHandler.UpdateTeam)))))
+
+	mux.Handle("POST /api/v1/teams/{id}/members",
+		apiLimiter.Limit(authMiddleware(adminOnly(http.HandlerFunc(teamHandler.AddTeamMember)))))
+
+	mux.Handle("GET /api/v1/teams/{id}/members",
+		apiLimiter.Limit(authMiddleware(http.HandlerFunc(teamHandler.ListTeamMembers))))
+
+	mux.Handle("DELETE /api/v1/teams/{id}/members/{userId}",
+		apiLimiter.Limit(authMiddleware(adminOnly(http.HandlerFunc(teamHandler.RemoveTeamMember)))))
 
 	// Global middleware chain: RequestID → RequestLogger → Recovery → mux.
 	// RequestID runs first so every log line and panic log carries the ID.

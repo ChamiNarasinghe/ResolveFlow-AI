@@ -12,6 +12,7 @@ import (
 
 	"github.com/chami2002/resolveflow-api/internal/middleware"
 	"github.com/chami2002/resolveflow-api/internal/models"
+	"github.com/chami2002/resolveflow-api/internal/repository"
 	"github.com/chami2002/resolveflow-api/internal/services"
 	"github.com/chami2002/resolveflow-api/internal/tickets"
 	"github.com/google/uuid"
@@ -29,10 +30,10 @@ type TicketRepository interface {
 	List(
 		ctx context.Context,
 		page int,
-		limit int,
+		pageSize int,
 		status string,
 		priority string,
-	) ([]models.Ticket, error)
+	) ([]models.Ticket, int, error)
 
 	GetByID(
 		ctx context.Context,
@@ -44,6 +45,25 @@ type TicketRepository interface {
 		id string,
 		actorID string,
 		req tickets.UpdateTicketRequest,
+	) (*models.Ticket, error)
+
+	GetHistoryByTicketID(
+		ctx context.Context,
+		ticketID string,
+		page int,
+		pageSize int,
+	) ([]models.TicketHistory, error)
+
+	CountHistoryByTicketID(
+		ctx context.Context,
+		ticketID string,
+	) (int, error)
+
+	AssignTeam(
+		ctx context.Context,
+		ticketID string,
+		teamID *string,
+		actorID string,
 	) (*models.Ticket, error)
 }
 
@@ -170,33 +190,34 @@ func (h *TicketHandler) CreateTicket(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+const maxTicketPageSize = 100
+
 func (h *TicketHandler) ListTickets(w http.ResponseWriter, r *http.Request) {
-	// Read pagination parameters.
 	page := 1
-	limit := 10
+	pageSize := 20
 
-	query := r.URL.Query()
+	q := r.URL.Query()
 
-	if pageValue := query.Get("page"); pageValue != "" {
-		parsedPage, err := strconv.Atoi(pageValue)
-		if err != nil || parsedPage < 1 {
-			http.Error(w, "Page must be a positive integer", http.StatusBadRequest)
+	if v := q.Get("page"); v != "" {
+		p, err := strconv.Atoi(v)
+		if err != nil || p < 1 {
+			http.Error(w, "page must be a positive integer", http.StatusBadRequest)
 			return
 		}
-		page = parsedPage
+		page = p
 	}
 
-	if limitValue := query.Get("limit"); limitValue != "" {
-		parsedLimit, err := strconv.Atoi(limitValue)
-		if err != nil || parsedLimit < 1 || parsedLimit > 100 {
-			http.Error(w, "Limit must be between 1 and 100", http.StatusBadRequest)
+	if v := q.Get("page_size"); v != "" {
+		ps, err := strconv.Atoi(v)
+		if err != nil || ps < 1 || ps > maxTicketPageSize {
+			http.Error(w, "page_size must be between 1 and 100", http.StatusBadRequest)
 			return
 		}
-		limit = parsedLimit
+		pageSize = ps
 	}
 
-	status := strings.ToLower(strings.TrimSpace(query.Get("status")))
-	priority := strings.ToLower(strings.TrimSpace(query.Get("priority")))
+	status := strings.ToLower(strings.TrimSpace(q.Get("status")))
+	priority := strings.ToLower(strings.TrimSpace(q.Get("priority")))
 
 	validStatuses := map[string]bool{
 		"open":                 true,
@@ -223,33 +244,34 @@ func (h *TicketHandler) ListTickets(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := h.repository.List(
-		r.Context(),
-		page,
-		limit,
-		status,
-		priority,
-	)
+	tickets, total, err := h.repository.List(r.Context(), page, pageSize, status, priority)
 	if err != nil {
 		http.Error(w, "Failed to retrieve tickets", http.StatusInternalServerError)
 		return
 	}
 
-	// Return tickets and pagination information.
-	response := map[string]interface{}{
-		"data": result,
+	if tickets == nil {
+		tickets = []models.Ticket{}
+	}
+
+	totalPages := 0
+	if total > 0 {
+		totalPages = (total + pageSize - 1) / pageSize
+	}
+
+	response := map[string]any{
+		"data": tickets,
 		"pagination": map[string]int{
-			"page":  page,
-			"limit": limit,
+			"page":        page,
+			"page_size":   pageSize,
+			"total":       total,
+			"total_pages": totalPages,
 		},
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-
-	if err := json.NewEncoder(w).Encode(response); err != nil {
-		return
-	}
+	json.NewEncoder(w).Encode(response) //nolint:errcheck
 }
 
 func (h *TicketHandler) GetTicket(w http.ResponseWriter, r *http.Request) {
@@ -279,6 +301,81 @@ func (h *TicketHandler) GetTicket(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewEncoder(w).Encode(ticket); err != nil {
 		return
 	}
+}
+
+const maxHistoryPageSize = 100
+
+func (h *TicketHandler) GetTicketHistory(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSpace(r.PathValue("id"))
+	if _, err := uuid.Parse(id); err != nil {
+		http.Error(w, `{"error":"invalid ticket ID"}`, http.StatusBadRequest)
+		return
+	}
+
+	if _, err := h.repository.GetByID(r.Context(), id); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			http.Error(w, `{"error":"ticket not found"}`, http.StatusNotFound)
+			return
+		}
+		http.Error(w, `{"error":"failed to retrieve ticket"}`, http.StatusInternalServerError)
+		return
+	}
+
+	page, pageSize := 1, 20
+	q := r.URL.Query()
+
+	if v := q.Get("page"); v != "" {
+		p, err := strconv.Atoi(v)
+		if err != nil || p < 1 {
+			http.Error(w, `{"error":"page must be a positive integer"}`, http.StatusBadRequest)
+			return
+		}
+		page = p
+	}
+
+	if v := q.Get("page_size"); v != "" {
+		ps, err := strconv.Atoi(v)
+		if err != nil || ps < 1 || ps > maxHistoryPageSize {
+			http.Error(w, `{"error":"page_size must be between 1 and 100"}`, http.StatusBadRequest)
+			return
+		}
+		pageSize = ps
+	}
+
+	total, err := h.repository.CountHistoryByTicketID(r.Context(), id)
+	if err != nil {
+		http.Error(w, `{"error":"failed to retrieve ticket history"}`, http.StatusInternalServerError)
+		return
+	}
+
+	records, err := h.repository.GetHistoryByTicketID(r.Context(), id, page, pageSize)
+	if err != nil {
+		http.Error(w, `{"error":"failed to retrieve ticket history"}`, http.StatusInternalServerError)
+		return
+	}
+
+	if records == nil {
+		records = []models.TicketHistory{}
+	}
+
+	totalPages := (total + pageSize - 1) / pageSize
+	if totalPages == 0 {
+		totalPages = 1
+	}
+
+	response := map[string]any{
+		"data": records,
+		"pagination": map[string]int{
+			"page":        page,
+			"page_size":   pageSize,
+			"total":       total,
+			"total_pages": totalPages,
+		},
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(response) //nolint:errcheck
 }
 
 func (h *TicketHandler) UpdateTicket(w http.ResponseWriter, r *http.Request) {
@@ -332,4 +429,61 @@ func (h *TicketHandler) UpdateTicket(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewEncoder(w).Encode(result); err != nil {
 		return
 	}
+}
+
+// assignTicketBody is the request body for PATCH /api/v1/tickets/{id}/assignment.
+// TeamID is a pointer so that JSON null explicitly unassigns the ticket.
+type assignTicketBody struct {
+	TeamID *string `json:"team_id"`
+}
+
+// AssignTicket handles PATCH /api/v1/tickets/{id}/assignment.
+// Admin only. Assigns or unassigns a ticket to/from a team.
+func (h *TicketHandler) AssignTicket(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.GetUserClaims(r.Context())
+	if !ok {
+		http.Error(w, `{"error":"authentication required"}`, http.StatusUnauthorized)
+		return
+	}
+	if claims.Role != "admin" {
+		http.Error(w, `{"error":"admin access required"}`, http.StatusForbidden)
+		return
+	}
+
+	id := strings.TrimSpace(r.PathValue("id"))
+	if _, err := uuid.Parse(id); err != nil {
+		http.Error(w, `{"error":"invalid ticket ID"}`, http.StatusBadRequest)
+		return
+	}
+
+	var body assignTicketBody
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&body); err != nil {
+		http.Error(w, `{"error":"invalid JSON request"}`, http.StatusBadRequest)
+		return
+	}
+
+	// Validate team UUID when provided.
+	if body.TeamID != nil {
+		if _, err := uuid.Parse(*body.TeamID); err != nil {
+			http.Error(w, `{"error":"invalid team_id"}`, http.StatusBadRequest)
+			return
+		}
+	}
+
+	ticket, err := h.repository.AssignTeam(r.Context(), id, body.TeamID, claims.UserID)
+	if err != nil {
+		switch {
+		case errors.Is(err, repository.ErrTicketNotFound):
+			http.Error(w, `{"error":"ticket not found"}`, http.StatusNotFound)
+		case errors.Is(err, repository.ErrTeamNotFound):
+			http.Error(w, `{"error":"team not found"}`, http.StatusNotFound)
+		default:
+			http.Error(w, `{"error":"failed to assign ticket"}`, http.StatusInternalServerError)
+		}
+		return
+	}
+
+	writeJSON(w, http.StatusOK, ticket)
 }

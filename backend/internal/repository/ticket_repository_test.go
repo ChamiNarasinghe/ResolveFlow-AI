@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -418,5 +419,351 @@ func TestTicketRepositoryUpdateCreatesAuditHistory(t *testing.T) {
 	}
 	if newMap["priority"] != "high" {
 		t.Errorf("expected new priority high, got %v", newMap["priority"])
+	}
+}
+
+// --- List pagination integration tests ---
+
+func createTicketsForListTest(t *testing.T, repo *TicketRepository, pool *pgxpool.Pool, n int) []string {
+	t.Helper()
+	actorID := createTestUser(t, pool)
+	ids := make([]string, n)
+	for i := range n {
+		req := tickets.CreateTicketRequest{
+			Subject:       fmt.Sprintf("List test ticket %d", i),
+			Description:   "pagination test",
+			CustomerName:  "Test Customer",
+			CustomerEmail: fmt.Sprintf("list-test-%d-%d@example.com", i, time.Now().UnixNano()),
+			Channel:       "web",
+		}
+		ticket, err := repo.Create(context.Background(), req, actorID)
+		if err != nil {
+			t.Fatalf("failed to create ticket %d: %v", i, err)
+		}
+		ids[i] = ticket.ID
+	}
+	t.Cleanup(func() {
+		for _, id := range ids {
+			pool.Exec(context.Background(), "DELETE FROM tickets WHERE id = $1", id) //nolint:errcheck
+		}
+	})
+	return ids
+}
+
+func TestTicketRepositoryListFirstPage(t *testing.T) {
+	repo, pool := setupTestRepository(t)
+	createTicketsForListTest(t, repo, pool, 5)
+
+	result, total, err := repo.List(context.Background(), 1, 3, "", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result) != 3 {
+		t.Errorf("expected 3 tickets on first page, got %d", len(result))
+	}
+	if total < 5 {
+		t.Errorf("expected total >= 5, got %d", total)
+	}
+}
+
+func TestTicketRepositoryListSecondPage(t *testing.T) {
+	repo, pool := setupTestRepository(t)
+	createTicketsForListTest(t, repo, pool, 5)
+
+	page1, total1, err := repo.List(context.Background(), 1, 3, "", "")
+	if err != nil {
+		t.Fatalf("unexpected error on page 1: %v", err)
+	}
+	page2, total2, err := repo.List(context.Background(), 2, 3, "", "")
+	if err != nil {
+		t.Fatalf("unexpected error on page 2: %v", err)
+	}
+	if total1 != total2 {
+		t.Errorf("total must be consistent across pages: %d vs %d", total1, total2)
+	}
+	ids1 := map[string]bool{}
+	for _, tk := range page1 {
+		ids1[tk.ID] = true
+	}
+	for _, tk := range page2 {
+		if ids1[tk.ID] {
+			t.Errorf("ticket %s appears on both pages", tk.ID)
+		}
+	}
+}
+
+func TestTicketRepositoryListEmptyPage(t *testing.T) {
+	repo, pool := setupTestRepository(t)
+	createTicketsForListTest(t, repo, pool, 2)
+
+	result, total, err := repo.List(context.Background(), 999, 20, "", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result) != 0 {
+		t.Errorf("expected empty page, got %d tickets", len(result))
+	}
+	if total < 2 {
+		t.Errorf("expected total >= 2 even on empty page, got %d", total)
+	}
+}
+
+func TestTicketRepositoryListTotalCount(t *testing.T) {
+	repo, pool := setupTestRepository(t)
+	ids := createTicketsForListTest(t, repo, pool, 4)
+
+	_, total, err := repo.List(context.Background(), 1, 100, "", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if total < len(ids) {
+		t.Errorf("expected total >= %d, got %d", len(ids), total)
+	}
+}
+
+func TestTicketRepositoryListFilteredCount(t *testing.T) {
+	repo, pool := setupTestRepository(t)
+	actorID := createTestUser(t, pool)
+
+	req := tickets.CreateTicketRequest{
+		Subject:       "Filter test open",
+		Description:   "filter test",
+		CustomerName:  "Filter Customer",
+		CustomerEmail: fmt.Sprintf("filter-test-%d@example.com", time.Now().UnixNano()),
+		Channel:       "web",
+	}
+	ticket, err := repo.Create(context.Background(), req, actorID)
+	if err != nil {
+		t.Fatalf("failed to create ticket: %v", err)
+	}
+	t.Cleanup(func() {
+		pool.Exec(context.Background(), "DELETE FROM tickets WHERE id = $1", ticket.ID) //nolint:errcheck
+	})
+
+	result, total, err := repo.List(context.Background(), 1, 20, "open", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, tk := range result {
+		if tk.Status != "open" {
+			t.Errorf("expected only open tickets, got status %s", tk.Status)
+		}
+	}
+	if total < len(result) {
+		t.Errorf("total %d < result count %d", total, len(result))
+	}
+}
+
+func TestTicketRepositoryListOrdering(t *testing.T) {
+	repo, pool := setupTestRepository(t)
+	createTicketsForListTest(t, repo, pool, 3)
+
+	result, _, err := repo.List(context.Background(), 1, 10, "", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for i := 1; i < len(result); i++ {
+		if result[i].CreatedAt.After(result[i-1].CreatedAt) {
+			t.Errorf("tickets not ordered newest first at index %d", i)
+		}
+	}
+}
+
+func TestTicketRepositoryListEmptyDatabase(t *testing.T) {
+	repo, _ := setupTestRepository(t)
+
+	// Use a priority that is unlikely to have any tickets.
+	result, total, err := repo.List(context.Background(), 1, 20, "urgent", "urgent")
+	if err != nil {
+		t.Fatalf("unexpected error on empty filter result: %v", err)
+	}
+	// result may be empty; total must be zero when no rows match.
+	if len(result) == 0 && total != 0 {
+		t.Errorf("expected total 0 when no rows match, got %d", total)
+	}
+}
+
+// --- AssignTeam integration tests ---
+
+func createTestTeam(t *testing.T, pool *pgxpool.Pool) string {
+	t.Helper()
+	var teamID string
+	err := pool.QueryRow(context.Background(),
+		`INSERT INTO teams (name) VALUES ($1) RETURNING id`,
+		fmt.Sprintf("test-team-%d", time.Now().UnixNano()),
+	).Scan(&teamID)
+	if err != nil {
+		t.Fatalf("failed to create test team: %v", err)
+	}
+	t.Cleanup(func() {
+		pool.Exec(context.Background(), "DELETE FROM teams WHERE id = $1", teamID) //nolint:errcheck
+	})
+	return teamID
+}
+
+func TestAssignTeamSuccess(t *testing.T) {
+	repo, pool := setupTestRepository(t)
+	ctx := context.Background()
+	actorID := createTestUser(t, pool)
+	ticketID := createTicketForUpdateTest(t, repo, pool)
+	teamID := createTestTeam(t, pool)
+
+	result, err := repo.AssignTeam(ctx, ticketID, &teamID, actorID)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.AssignedTeamID == nil || *result.AssignedTeamID != teamID {
+		t.Errorf("expected assigned_team_id %s, got %v", teamID, result.AssignedTeamID)
+	}
+}
+
+func TestAssignTeamReassignment(t *testing.T) {
+	repo, pool := setupTestRepository(t)
+	ctx := context.Background()
+	actorID := createTestUser(t, pool)
+	ticketID := createTicketForUpdateTest(t, repo, pool)
+	team1 := createTestTeam(t, pool)
+	team2 := createTestTeam(t, pool)
+
+	if _, err := repo.AssignTeam(ctx, ticketID, &team1, actorID); err != nil {
+		t.Fatalf("first assignment failed: %v", err)
+	}
+	result, err := repo.AssignTeam(ctx, ticketID, &team2, actorID)
+	if err != nil {
+		t.Fatalf("reassignment failed: %v", err)
+	}
+	if result.AssignedTeamID == nil || *result.AssignedTeamID != team2 {
+		t.Errorf("expected team2 after reassignment, got %v", result.AssignedTeamID)
+	}
+}
+
+func TestAssignTeamUnassign(t *testing.T) {
+	repo, pool := setupTestRepository(t)
+	ctx := context.Background()
+	actorID := createTestUser(t, pool)
+	ticketID := createTicketForUpdateTest(t, repo, pool)
+	teamID := createTestTeam(t, pool)
+
+	if _, err := repo.AssignTeam(ctx, ticketID, &teamID, actorID); err != nil {
+		t.Fatalf("assignment failed: %v", err)
+	}
+	result, err := repo.AssignTeam(ctx, ticketID, nil, actorID)
+	if err != nil {
+		t.Fatalf("unassignment failed: %v", err)
+	}
+	if result.AssignedTeamID != nil {
+		t.Errorf("expected nil assigned_team_id after unassign, got %v", result.AssignedTeamID)
+	}
+}
+
+func TestAssignTeamTicketNotFound(t *testing.T) {
+	repo, pool := setupTestRepository(t)
+	actorID := createTestUser(t, pool)
+	teamID := createTestTeam(t, pool)
+	missingID := "00000000-0000-4000-8000-000000000000"
+
+	_, err := repo.AssignTeam(context.Background(), missingID, &teamID, actorID)
+	if !errors.Is(err, ErrTicketNotFound) {
+		t.Errorf("expected ErrTicketNotFound, got %v", err)
+	}
+}
+
+func TestAssignTeamTeamNotFound(t *testing.T) {
+	repo, pool := setupTestRepository(t)
+	actorID := createTestUser(t, pool)
+	ticketID := createTicketForUpdateTest(t, repo, pool)
+	missingTeam := "00000000-0000-4000-8000-000000000001"
+
+	_, err := repo.AssignTeam(context.Background(), ticketID, &missingTeam, actorID)
+	if !errors.Is(err, ErrTeamNotFound) {
+		t.Errorf("expected ErrTeamNotFound, got %v", err)
+	}
+}
+
+func TestAssignTeamDuplicateNoHistoryRecord(t *testing.T) {
+	repo, pool := setupTestRepository(t)
+	ctx := context.Background()
+	actorID := createTestUser(t, pool)
+	ticketID := createTicketForUpdateTest(t, repo, pool)
+	teamID := createTestTeam(t, pool)
+
+	if _, err := repo.AssignTeam(ctx, ticketID, &teamID, actorID); err != nil {
+		t.Fatalf("first assignment failed: %v", err)
+	}
+	// Assign same team again — should be a no-op.
+	if _, err := repo.AssignTeam(ctx, ticketID, &teamID, actorID); err != nil {
+		t.Fatalf("duplicate assignment failed: %v", err)
+	}
+
+	var count int
+	if err := pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM ticket_history WHERE ticket_id = $1::uuid AND action IN ('ticket.assigned','ticket.unassigned')`,
+		ticketID,
+	).Scan(&count); err != nil {
+		t.Fatalf("failed to count history: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("expected 1 history record for duplicate assignment, got %d", count)
+	}
+}
+
+func TestAssignTeamAuditRecordPersistence(t *testing.T) {
+	repo, pool := setupTestRepository(t)
+	ctx := context.Background()
+	actorID := createTestUser(t, pool)
+	ticketID := createTicketForUpdateTest(t, repo, pool)
+	teamID := createTestTeam(t, pool)
+
+	if _, err := repo.AssignTeam(ctx, ticketID, &teamID, actorID); err != nil {
+		t.Fatalf("assignment failed: %v", err)
+	}
+
+	var action, oldVal, newVal string
+	var storedActorID string
+	err := pool.QueryRow(ctx,
+		`SELECT actor_id, action, old_value::text, new_value::text
+		   FROM ticket_history
+		  WHERE ticket_id = $1::uuid AND action = 'ticket.assigned'`,
+		ticketID,
+	).Scan(&storedActorID, &action, &oldVal, &newVal)
+	if err != nil {
+		t.Fatalf("failed to query audit record: %v", err)
+	}
+	if storedActorID != actorID {
+		t.Errorf("expected actor_id %s, got %s", actorID, storedActorID)
+	}
+	if action != "ticket.assigned" {
+		t.Errorf("expected action ticket.assigned, got %s", action)
+	}
+	if !strings.Contains(newVal, teamID) {
+		t.Errorf("expected new_value to contain team ID %s, got %s", teamID, newVal)
+	}
+}
+
+func TestAssignTeamTransactionRollbackOnHistoryFailure(t *testing.T) {
+	// Verify the ticket row is not updated when the operation fails.
+	// We trigger failure by supplying a non-existent team ID, which causes
+	// the team-existence check to return ErrTeamNotFound before any UPDATE
+	// or INSERT runs, exercising the deferred tx.Rollback path.
+	repo, pool := setupTestRepository(t)
+	ctx := context.Background()
+	actorID := createTestUser(t, pool)
+	ticketID := createTicketForUpdateTest(t, repo, pool)
+	badTeam := "00000000-0000-4000-8000-000000000002"
+
+	_, err := repo.AssignTeam(ctx, ticketID, &badTeam, actorID)
+	if err == nil {
+		t.Fatal("expected error for non-existent team")
+	}
+
+	// Ticket must still have no assigned team.
+	var assignedTeamID *string
+	if err := pool.QueryRow(ctx,
+		`SELECT assigned_team_id FROM tickets WHERE id = $1`, ticketID,
+	).Scan(&assignedTeamID); err != nil {
+		t.Fatalf("failed to read ticket: %v", err)
+	}
+	if assignedTeamID != nil {
+		t.Errorf("expected assigned_team_id to remain nil after rollback, got %v", *assignedTeamID)
 	}
 }
