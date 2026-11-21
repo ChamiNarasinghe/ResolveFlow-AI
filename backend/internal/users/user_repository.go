@@ -11,6 +11,9 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// ErrEmailTaken is returned by Create when the email address is already registered.
+var ErrEmailTaken = errors.New("email address is already registered")
+
 type UserRepository struct {
 	db *pgxpool.Pool
 }
@@ -54,7 +57,7 @@ func (r *UserRepository) Create(
 		var pgErr *pgconn.PgError
 
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
-			return nil, errors.New("email address is already registered")
+			return nil, ErrEmailTaken
 		}
 
 		return nil, fmt.Errorf("failed to create user: %w", err)

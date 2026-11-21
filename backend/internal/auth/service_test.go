@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/chami2002/resolveflow-api/internal/models"
+	"github.com/chami2002/resolveflow-api/internal/users"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -219,5 +220,25 @@ func TestAuthServiceLoginInactiveUser(t *testing.T) {
 
 	if !errors.Is(err, ErrInactiveUser) {
 		t.Fatalf("expected inactive user error, got %v", err)
+	}
+}
+
+func TestAuthServiceRegisterDuplicateEmail(t *testing.T) {
+	repo := &mockAuthUserRepository{
+		createErr: users.ErrEmailTaken,
+	}
+	service := newTestAuthService(t, repo)
+
+	_, err := service.Register(
+		context.Background(),
+		RegisterRequest{
+			FullName: "Test Agent",
+			Email:    "agent@example.com",
+			Password: "Password123",
+		},
+	)
+
+	if !errors.Is(err, ErrEmailAlreadyRegistered) {
+		t.Fatalf("expected ErrEmailAlreadyRegistered, got %v", err)
 	}
 }

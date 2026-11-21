@@ -6,13 +6,15 @@ import (
 	"fmt"
 
 	"github.com/chami2002/resolveflow-api/internal/models"
+	"github.com/chami2002/resolveflow-api/internal/users"
 	"github.com/jackc/pgx/v5"
 )
 
 var (
-	ErrInvalidCredentials = errors.New("invalid email or password")
-	ErrInactiveUser       = errors.New("user account is inactive")
-	ErrUserNotFound       = errors.New("user not found")
+	ErrInvalidCredentials    = errors.New("invalid email or password")
+	ErrInactiveUser          = errors.New("user account is inactive")
+	ErrUserNotFound          = errors.New("user not found")
+	ErrEmailAlreadyRegistered = errors.New("email address is already registered")
 )
 
 type AuthUserRepository interface {
@@ -76,6 +78,9 @@ func (s *AuthService) Register(
 		passwordHash,
 	)
 	if err != nil {
+		if errors.Is(err, users.ErrEmailTaken) {
+			return nil, ErrEmailAlreadyRegistered
+		}
 		return nil, err
 	}
 

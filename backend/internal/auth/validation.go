@@ -2,10 +2,22 @@ package auth
 
 import (
 	"errors"
+	"fmt"
 	"net/mail"
 	"strings"
 	"unicode"
 )
+
+// ErrValidation is the sentinel wrapped by all RegisterRequest.Validate errors.
+// Handlers can use errors.Is(err, ErrValidation) or IsValidationError(err)
+// to distinguish safe user-facing messages from internal failures.
+var ErrValidation = errors.New("validation error")
+
+// IsValidationError reports whether err originated from input validation
+// (i.e. it is safe to return the message verbatim to the client).
+func IsValidationError(err error) bool {
+	return errors.Is(err, ErrValidation)
+}
 
 type RegisterRequest struct {
 	FullName string `json:"full_name"`
@@ -18,24 +30,24 @@ func (r *RegisterRequest) Validate() error {
 	r.Email = strings.TrimSpace(strings.ToLower(r.Email))
 
 	if r.FullName == "" {
-		return errors.New("full name is required")
+		return fmt.Errorf("%w: full name is required", ErrValidation)
 	}
 
 	if len(r.FullName) > 150 {
-		return errors.New("full name must not exceed 150 characters")
+		return fmt.Errorf("%w: full name must not exceed 150 characters", ErrValidation)
 	}
 
 	address, err := mail.ParseAddress(r.Email)
 	if err != nil || address.Address != r.Email {
-		return errors.New("valid email address is required")
+		return fmt.Errorf("%w: valid email address is required", ErrValidation)
 	}
 
 	if len(r.Password) < 8 {
-		return errors.New("password must contain at least 8 characters")
+		return fmt.Errorf("%w: password must contain at least 8 characters", ErrValidation)
 	}
 
 	if len(r.Password) > 72 {
-		return errors.New("password must not exceed 72 bytes")
+		return fmt.Errorf("%w: password must not exceed 72 bytes", ErrValidation)
 	}
 
 	var hasLetter, hasNumber bool
@@ -50,7 +62,7 @@ func (r *RegisterRequest) Validate() error {
 	}
 
 	if !hasLetter || !hasNumber {
-		return errors.New("password must contain at least one letter and one number")
+		return fmt.Errorf("%w: password must contain at least one letter and one number", ErrValidation)
 	}
 
 	return nil
@@ -66,11 +78,11 @@ func (r *LoginRequest) Validate() error {
 
 	address, err := mail.ParseAddress(r.Email)
 	if err != nil || address.Address != r.Email {
-		return errors.New("valid email address is required")
+		return fmt.Errorf("%w: valid email address is required", ErrValidation)
 	}
 
 	if r.Password == "" {
-		return errors.New("password is required")
+		return fmt.Errorf("%w: password is required", ErrValidation)
 	}
 
 	return nil

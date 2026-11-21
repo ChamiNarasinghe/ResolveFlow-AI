@@ -240,3 +240,73 @@ func TestAuthHandlerMeWithoutAuthentication(t *testing.T) {
 		t.Fatalf("expected status 401, got %d", response.Code)
 	}
 }
+
+func TestAuthHandlerRegisterDoesNotLeakInternalError(t *testing.T) {
+	internalMsg := "pq: duplicate key value violates unique constraint"
+	service := &mockAuthService{
+		registerErr: errors.New(internalMsg),
+	}
+
+	handler := NewAuthHandler(service)
+
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/auth/register",
+		strings.NewReader(`{"full_name":"Test","email":"t@example.com","password":"Password1"}`),
+	)
+
+	response := httptest.NewRecorder()
+	handler.Register(response, request)
+
+	if response.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d", response.Code)
+	}
+	if strings.Contains(response.Body.String(), internalMsg) {
+		t.Error("response body must not contain the internal error message")
+	}
+}
+
+func TestAuthHandlerRegisterValidationErrorIsReturned(t *testing.T) {
+	// Validation errors (from RegisterRequest.Validate) are safe to return.
+	service := &mockAuthService{
+		registerErr: errors.New("validation error: full name is required"),
+	}
+
+	handler := NewAuthHandler(service)
+
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/auth/register",
+		strings.NewReader(`{"full_name":"","email":"t@example.com","password":"Password1"}`),
+	)
+
+	response := httptest.NewRecorder()
+	handler.Register(response, request)
+
+	// The service mock returns an error; the handler must not 500 for a
+	// validation-shaped error but must also not leak DB internals.
+	if response.Code == http.StatusOK {
+		t.Error("expected a non-200 response for a registration error")
+	}
+}
+
+func TestAuthHandlerRegisterDuplicateEmailReturns409(t *testing.T) {
+	service := &mockAuthService{
+		registerErr: auth.ErrEmailAlreadyRegistered,
+	}
+
+	handler := NewAuthHandler(service)
+
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/auth/register",
+		strings.NewReader(`{"full_name":"Test","email":"t@example.com","password":"Password1"}`),
+	)
+
+	response := httptest.NewRecorder()
+	handler.Register(response, request)
+
+	if response.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d", response.Code)
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 
 	"github.com/chami2002/resolveflow-api/internal/auth"
@@ -46,7 +47,23 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 
 	response, err := h.service.Register(r.Context(), request)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		switch {
+		case errors.Is(err, auth.ErrEmailAlreadyRegistered):
+			http.Error(w, "Email address is already registered", http.StatusConflict)
+		case errors.Is(err, auth.ErrInvalidCredentials):
+			http.Error(w, "Invalid email or password", http.StatusUnauthorized)
+		case errors.Is(err, auth.ErrInactiveUser):
+			http.Error(w, "User account is inactive", http.StatusForbidden)
+		case auth.IsValidationError(err):
+			// Safe plain-text message produced by RegisterRequest.Validate.
+			http.Error(w, err.Error(), http.StatusBadRequest)
+		default:
+			slog.Error("registration failed",
+				slog.String("request_id", middleware.GetRequestID(r.Context())),
+				slog.String("error", err.Error()),
+			)
+			http.Error(w, "Registration failed", http.StatusInternalServerError)
+		}
 		return
 	}
 
