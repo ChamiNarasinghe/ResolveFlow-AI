@@ -8,13 +8,17 @@ import (
 
 // Config holds the application configuration.
 type Config struct {
-	Port          string
-	Environment   string
-	DatabaseURL   string
-	JWTSecret     string
-	JWTExpiration int
-	AIServiceURL  string
-	LogLevel      string
+	Port               string
+	Environment        string
+	DatabaseURL        string
+	JWTSecret          string
+	JWTExpiration      int
+	AIServiceURL       string
+	LogLevel           string
+	BootstrapAdminName  string
+	BootstrapAdminEmail string
+	BootstrapAdminPass  string
+	AIServiceAPIKey     string
 }
 
 // ErrMissingJWTSecret is returned by Load when JWT_SECRET is absent or too short.
@@ -56,12 +60,16 @@ func Load() (Config, error) {
 	}
 
 	return Config{
-		JWTSecret:     jwtSecret,
-		JWTExpiration: jwtExpiration,
-		Port:          port,
-		Environment:   environment,
-		DatabaseURL:   os.Getenv("DATABASE_URL"),
-		AIServiceURL:  aiServiceURL,
-		LogLevel:      logLevel,
+		JWTSecret:           jwtSecret,
+		JWTExpiration:       jwtExpiration,
+		Port:                port,
+		Environment:         environment,
+		DatabaseURL:         os.Getenv("DATABASE_URL"),
+		AIServiceURL:        aiServiceURL,
+		LogLevel:            logLevel,
+		BootstrapAdminName:  os.Getenv("BOOTSTRAP_ADMIN_NAME"),
+		BootstrapAdminEmail: os.Getenv("BOOTSTRAP_ADMIN_EMAIL"),
+		BootstrapAdminPass:  os.Getenv("BOOTSTRAP_ADMIN_PASSWORD"),
+		AIServiceAPIKey:     os.Getenv("AI_SERVICE_API_KEY"),
 	}, nil
 }

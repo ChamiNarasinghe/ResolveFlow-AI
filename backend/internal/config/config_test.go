@@ -86,6 +86,32 @@ func TestLoadRejectsMissingJWTSecret(t *testing.T) {
 	}
 }
 
+func TestLoadAIServiceAPIKey(t *testing.T) {
+	t.Setenv("JWT_SECRET", testSecret)
+	t.Setenv("AI_SERVICE_API_KEY", "test-ai-key-value")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.AIServiceAPIKey != "test-ai-key-value" {
+		t.Errorf("expected test-ai-key-value, got %s", cfg.AIServiceAPIKey)
+	}
+}
+
+func TestLoadAIServiceAPIKeyUnset(t *testing.T) {
+	t.Setenv("JWT_SECRET", testSecret)
+	t.Setenv("AI_SERVICE_API_KEY", "")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.AIServiceAPIKey != "" {
+		t.Errorf("expected empty string, got %s", cfg.AIServiceAPIKey)
+	}
+}
+
 func TestLoadErrorDoesNotExposeSecret(t *testing.T) {
 	shortSecret := "tiny"
 	t.Setenv("JWT_SECRET", shortSecret)
