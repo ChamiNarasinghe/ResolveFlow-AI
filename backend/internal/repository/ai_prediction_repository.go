@@ -30,9 +30,11 @@ func (r *AIPredictionRepository) Create(
 			category,
 			predicted_priority,
 			sentiment,
-			confidence
+			confidence,
+			suggested_team_id,
+			response_suggestion
 		)
-		VALUES ($1, $2, $3, $4, $5, $6)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		RETURNING id, created_at
 	`
 
@@ -45,6 +47,8 @@ func (r *AIPredictionRepository) Create(
 		prediction.PredictedPriority,
 		prediction.Sentiment,
 		prediction.Confidence,
+		prediction.SuggestedTeamID,
+		prediction.ResponseSuggestion,
 	).Scan(
 		&prediction.ID,
 		&prediction.CreatedAt,
@@ -71,6 +75,8 @@ func (r *AIPredictionRepository) GetLatestByTicketID(
 			predicted_priority,
 			sentiment,
 			confidence,
+			suggested_team_id,
+			response_suggestion,
 			created_at
 		FROM ai_predictions
 		WHERE ticket_id = $1
@@ -88,6 +94,8 @@ func (r *AIPredictionRepository) GetLatestByTicketID(
 		&prediction.PredictedPriority,
 		&prediction.Sentiment,
 		&prediction.Confidence,
+		&prediction.SuggestedTeamID,
+		&prediction.ResponseSuggestion,
 		&prediction.CreatedAt,
 	)
 
