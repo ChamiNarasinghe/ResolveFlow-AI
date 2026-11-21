@@ -53,6 +53,7 @@ func main() {
 		dbPool,
 		jwtService,
 		cfg.Environment == "development",
+		cfg.AIServiceURL,
 	)
 
 	server := &http.Server{

@@ -12,6 +12,7 @@ type Config struct {
 	DatabaseURL   string
 	JWTSecret     string
 	JWTExpiration int
+	AIServiceURL  string
 }
 
 // Load reads configuration from environment variables.
@@ -24,6 +25,11 @@ func Load() Config {
 	environment := os.Getenv("APP_ENV")
 	if environment == "" {
 		environment = "development"
+	}
+
+	aiServiceURL := os.Getenv("AI_SERVICE_URL")
+	if aiServiceURL == "" {
+		aiServiceURL = "http://127.0.0.1:8001"
 	}
 
 	jwtExpiration := 15
@@ -40,5 +46,6 @@ func Load() Config {
 		Port:          port,
 		Environment:   environment,
 		DatabaseURL:   os.Getenv("DATABASE_URL"),
+		AIServiceURL:  aiServiceURL,
 	}
 }

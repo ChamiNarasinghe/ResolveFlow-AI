@@ -4,12 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/chami2002/resolveflow-api/internal/middleware"
 	"github.com/chami2002/resolveflow-api/internal/models"
+	"github.com/chami2002/resolveflow-api/internal/services"
 	"github.com/chami2002/resolveflow-api/internal/tickets"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -43,14 +46,46 @@ type TicketRepository interface {
 	) (*models.Ticket, error)
 }
 
-type TicketHandler struct {
-	repository TicketRepository
+// AIClassifier defines the AI classification operation.
+type AIClassifier interface {
+	ClassifyTicket(
+		ctx context.Context,
+		subject string,
+		description string,
+	) (*services.ClassificationResponse, error)
 }
 
-// NewTicketHandler creates a ticket handler.
+// AIPredictionRepository defines AI prediction database operations.
+type AIPredictionRepository interface {
+	Create(
+		ctx context.Context,
+		prediction *models.AIPrediction,
+	) error
+}
+
+type TicketHandler struct {
+	repository     TicketRepository
+	aiClient       AIClassifier
+	predictionRepo AIPredictionRepository
+}
+
+// NewTicketHandler creates a ticket handler without AI dependencies.
 func NewTicketHandler(repo TicketRepository) *TicketHandler {
 	return &TicketHandler{
 		repository: repo,
+	}
+}
+
+// NewTicketHandlerWithAI creates a ticket handler with AI dependencies.
+func NewTicketHandlerWithAI(
+	repo TicketRepository,
+	aiClient AIClassifier,
+	predictionRepo AIPredictionRepository,
+) *TicketHandler {
+	return &TicketHandler{
+		repository:     repo,
+		aiClient:       aiClient,
+		predictionRepo: predictionRepo,
 	}
 }
 
@@ -74,6 +109,42 @@ func (h *TicketHandler) CreateTicket(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		http.Error(w, "Failed to create ticket", http.StatusInternalServerError)
 		return
+	}
+
+	// Run AI classification when the AI dependencies are configured.
+	if h.aiClient != nil && h.predictionRepo != nil {
+		aiCtx, cancel := context.WithTimeout(
+			r.Context(),
+			6*time.Second,
+		)
+
+		classification, aiErr := h.aiClient.ClassifyTicket(
+			aiCtx,
+			result.Subject,
+			result.Description,
+		)
+
+		cancel()
+
+		if aiErr != nil {
+			log.Printf("AI classification failed for ticket %s: %v", result.ID, aiErr)
+		} else {
+			prediction := &models.AIPrediction{
+				TicketID:          result.ID,
+				ModelVersion:      "rules-v1",
+				Category:          classification.Category,
+				PredictedPriority: classification.Priority,
+				Sentiment:         classification.Sentiment,
+				Confidence:        classification.Confidence,
+			}
+
+			if err := h.predictionRepo.Create(
+				r.Context(),
+				prediction,
+			); err != nil {
+				log.Printf("Failed to save AI prediction for ticket %s: %v", result.ID, err)
+			}
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")

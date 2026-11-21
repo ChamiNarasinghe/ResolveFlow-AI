@@ -7,6 +7,7 @@ import (
 	"github.com/chami2002/resolveflow-api/internal/handlers"
 	"github.com/chami2002/resolveflow-api/internal/middleware"
 	"github.com/chami2002/resolveflow-api/internal/repository"
+	"github.com/chami2002/resolveflow-api/internal/services"
 	"github.com/chami2002/resolveflow-api/internal/users"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -16,6 +17,7 @@ func NewRouter(
 	db *pgxpool.Pool,
 	jwtService *auth.JWTService,
 	allowRegistration bool,
+	aiServiceURL string,
 ) *http.ServeMux {
 	mux := http.NewServeMux()
 
@@ -44,7 +46,16 @@ func NewRouter(
 
 	// Ticket endpoints
 	ticketRepo := repository.NewTicketRepository(db)
-	ticketHandler := handlers.NewTicketHandler(ticketRepo)
+
+	// AI classification dependencies
+	aiClient := services.NewAIClient(aiServiceURL)
+	predictionRepo := repository.NewAIPredictionRepository(db)
+
+	ticketHandler := handlers.NewTicketHandlerWithAI(
+		ticketRepo,
+		aiClient,
+		predictionRepo,
+	)
 
 	// Comment endpoints
 	commentRepo := repository.NewCommentRepository(db)
