@@ -168,7 +168,7 @@ func (h *TicketHandler) CreateTicket(w http.ResponseWriter, r *http.Request) {
 		} else {
 			prediction := &models.AIPrediction{
 				TicketID:          result.ID,
-				ModelVersion:      "rules-v1",
+				ModelVersion:      "tfidf-logreg-v1",
 				Category:          &classification.Category,
 				PredictedPriority: &classification.Priority,
 				Sentiment:         &classification.Sentiment,

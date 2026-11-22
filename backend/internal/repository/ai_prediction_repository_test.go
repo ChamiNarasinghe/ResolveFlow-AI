@@ -72,7 +72,7 @@ func TestAIPredictionCreateNullableFields(t *testing.T) {
 
 	prediction := &models.AIPrediction{
 		TicketID:     ticketID,
-		ModelVersion: "rules-v1",
+		ModelVersion: "tfidf-logreg-v1",
 		// Category, PredictedPriority, Sentiment, Confidence,
 		// SuggestedTeamID, ResponseSuggestion all nil.
 	}
@@ -128,7 +128,7 @@ func TestAIPredictionCreateAllFields(t *testing.T) {
 
 	prediction := &models.AIPrediction{
 		TicketID:           ticketID,
-		ModelVersion:       "rules-v1",
+		ModelVersion:       "tfidf-logreg-v1",
 		Category:           &category,
 		PredictedPriority:  &priority,
 		Sentiment:          &sentiment,
@@ -177,7 +177,7 @@ func TestAIPredictionGetLatestReturnsNewest(t *testing.T) {
 
 	if err := repo.Create(context.Background(), &models.AIPrediction{
 		TicketID:     ticketID,
-		ModelVersion: "rules-v1",
+		ModelVersion: "tfidf-logreg-v1",
 		Category:     &first,
 	}); err != nil {
 		t.Fatalf("failed to create first prediction: %v", err)

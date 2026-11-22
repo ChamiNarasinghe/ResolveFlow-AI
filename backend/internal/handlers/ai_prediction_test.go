@@ -41,7 +41,7 @@ func TestGetLatestPredictionSuccess(t *testing.T) {
 	expectedPrediction := &models.AIPrediction{
 		ID:                "0a554678-8e7d-413b-a781-e1276aa58833",
 		TicketID:          ticketID,
-		ModelVersion:      "rules-v1",
+		ModelVersion:      "tfidf-logreg-v1",
 		Category:          &category,
 		PredictedPriority: &priority,
 		Sentiment:         &sentiment,
