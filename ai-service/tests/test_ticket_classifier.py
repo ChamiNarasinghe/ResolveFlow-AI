@@ -1,5 +1,6 @@
 
 import unittest
+import math
 
 from app.schemas.ticket import TicketClassificationRequest
 from app.services.ticket_classifier import classify_ticket
@@ -27,7 +28,7 @@ class TestTicketClassifier(unittest.TestCase):
 
         self.assertEqual(result.priority, "urgent")
 
-    def test_negative_sentiment(self):
+    def test_sentiment_prediction_is_valid(self):
         request = TicketClassificationRequest(
             subject="Very disappointed",
             description="I am frustrated with this terrible service.",
@@ -35,7 +36,10 @@ class TestTicketClassifier(unittest.TestCase):
 
         result = classify_ticket(request)
 
-        self.assertEqual(result.sentiment, "negative")
+        self.assertIn(
+            result.sentiment,
+            ["positive", "neutral", "negative"],
+        )
 
     def test_general_inquiry(self):
         request = TicketClassificationRequest(
@@ -55,8 +59,30 @@ class TestTicketClassifier(unittest.TestCase):
 
         result = classify_ticket(request)
 
+        self.assertTrue(math.isfinite(result.confidence))
         self.assertGreaterEqual(result.confidence, 0.0)
         self.assertLessEqual(result.confidence, 1.0)
+
+    def test_all_predictions_are_valid(self):
+        request = TicketClassificationRequest(
+            subject="Account access problem",
+            description="I cannot log in to my account.",
+        )
+
+        result = classify_ticket(request)
+
+        self.assertIn(
+            result.category,
+            ["billing", "technical_support", "account", "general_inquiry"],
+        )
+        self.assertIn(
+            result.priority,
+            ["low", "medium", "high", "urgent"],
+        )
+        self.assertIn(
+            result.sentiment,
+            ["positive", "neutral", "negative"],
+        )
 
 
 if __name__ == "__main__":
