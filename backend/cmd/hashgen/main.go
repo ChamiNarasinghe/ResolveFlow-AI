@@ -1,12 +1,28 @@
 package main
 
 import (
-	"fmt"
+    "fmt"
+    "io"
+    "os"
+    "strings"
 
-	"golang.org/x/crypto/bcrypt"
+    "github.com/chami2002/resolveflow-api/internal/auth"
 )
 
 func main() {
-	h, _ := bcrypt.GenerateFromPassword([]byte("Verify123!"), bcrypt.DefaultCost)
-	fmt.Println(string(h))
+    input, err := io.ReadAll(os.Stdin)
+    if err != nil {
+        fmt.Fprintln(os.Stderr, "Failed to read password")
+        os.Exit(1)
+    }
+
+    password := strings.TrimRight(string(input), "\r\n")
+
+    hash, err := auth.HashPassword(password)
+    if err != nil {
+        fmt.Fprintln(os.Stderr, err)
+        os.Exit(1)
+    }
+
+    fmt.Println(hash)
 }
