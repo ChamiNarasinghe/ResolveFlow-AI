@@ -1,0 +1,91 @@
+{
+    "project": "ResolveFlow-AI",
+    "model_version": "tfidf-logreg-v1",
+    "created_date": "2026-11-22",
+    "algorithm": "TF-IDF + Logistic Regression",
+    "training_configuration": {
+        "vectorizer": {
+            "max_features": 10000,
+            "ngram_range": [
+                1,
+                2
+            ],
+            "stop_words": "english",
+            "lowercase": true,
+            "sublinear_tf": true,
+            "min_df": 2,
+            "max_df": 0.95,
+            "actual_feature_count": 5319
+        },
+        "category": {
+            "C": 10.0,
+            "class_weight": null,
+            "classes": [
+                "account",
+                "billing",
+                "general_inquiry",
+                "technical_support"
+            ]
+        },
+        "priority": {
+            "C": 10.0,
+            "class_weight": "balanced",
+            "classes": [
+                "high",
+                "low",
+                "medium",
+                "urgent"
+            ]
+        },
+        "sentiment": {
+            "C": 5.0,
+            "class_weight": null,
+            "classes": [
+                "negative",
+                "neutral",
+                "positive"
+            ]
+        }
+    },
+    "dataset": {
+        "training_records": 1119,
+        "validation_records": 236,
+        "test_records": 242,
+        "scenario_groups_preserved": true
+    },
+    "test_metrics": {
+        "category": {
+            "accuracy": 0.8099,
+            "macro_precision": 0.8388,
+            "macro_recall": 0.8022,
+            "macro_f1": 0.8079,
+            "weighted_f1": 0.8081,
+            "mean_confidence": 0.7457
+        },
+        "priority": {
+            "accuracy": 0.7645,
+            "macro_precision": 0.7817,
+            "macro_recall": 0.7841,
+            "macro_f1": 0.7777,
+            "weighted_f1": 0.7638,
+            "mean_confidence": 0.6545
+        },
+        "sentiment": {
+            "accuracy": 0.7479,
+            "macro_precision": 0.8131,
+            "macro_recall": 0.6956,
+            "macro_f1": 0.7315,
+            "weighted_f1": 0.7449,
+            "mean_confidence": 0.7127
+        }
+    },
+    "software": {
+        "scikit_learn": "1.6.1"
+    },
+    "artifacts": [
+        "tfidf_vectorizer.joblib",
+        "category_model.joblib",
+        "priority_model.joblib",
+        "sentiment_model.joblib"
+    ]
+}
