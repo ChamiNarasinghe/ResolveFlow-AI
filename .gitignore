@@ -35,3 +35,11 @@ docker-data/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Editor backup files
+*.bak
+
+# Local dataset backups
+ai-service/data/tickets_synthetic_original_backup.csv
+ai-service/data/tickets_synthetic_stage923_backup.csv
+ai-service/data/ticket_scenario_groups_stage923_backup.csv
