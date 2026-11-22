@@ -1,3 +1,4 @@
+
 # syntax=docker/dockerfile:1
 
 FROM python:3.13-slim AS runtime
@@ -7,14 +8,19 @@ RUN groupadd -r appgroup && useradd -r -g appgroup appuser
 
 WORKDIR /app
 
-# Install dependencies as root, then hand ownership to appuser.
+# Install dependencies.
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application source.
 COPY app/ ./app/
 
+# Copy trained ML model artifacts.
+COPY models/ ./models/
+
+# Set ownership and permissions.
 RUN chown -R appuser:appgroup /app
+
 USER appuser
 
 EXPOSE 8001
