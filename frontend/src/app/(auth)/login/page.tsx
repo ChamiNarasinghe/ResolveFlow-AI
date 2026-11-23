@@ -20,8 +20,8 @@ export default function LoginPage() {
     setError(null);
     setLoading(true);
     try {
-      await login({ email, password });
-      router.replace("/dashboard");
+      const user = await login({ email, password });
+      router.replace(user.must_change_password ? "/change-password" : "/dashboard");
     } catch (err) {
       setError(
         err instanceof ApiError

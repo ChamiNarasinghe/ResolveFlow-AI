@@ -9,6 +9,7 @@ export interface User {
   email: string;
   role: UserRole;
   is_active: boolean;
+  must_change_password: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -125,6 +126,12 @@ export interface LoginRequest {
   password: string;
 }
 
+export interface ChangePasswordRequest {
+  current_password: string;
+  new_password: string;
+  confirm_password: string;
+}
+
 export interface RegisterRequest {
   full_name: string;
   email: string;
@@ -170,6 +177,21 @@ export interface UpdateTeamRequest {
 export interface AddTeamMemberRequest {
   user_id: string;
   team_role?: TeamMemberRole;
+}
+
+// "name" matches the JSON tag in backend ProvisionRequest — NOT "full_name".
+// Role is restricted to "agent" | "admin" by backend validation.
+export type ProvisionableRole = "agent" | "admin";
+
+export interface ProvisionUserRequest {
+  name: string;
+  email: string;
+  password: string;
+  role: ProvisionableRole;
+}
+
+export interface ProvisionUserResponse {
+  user: User;
 }
 
 // ─── Paginated response wrapper ───────────────────────────────────────────────

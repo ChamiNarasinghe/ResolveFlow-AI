@@ -8,7 +8,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { ApiError, TOKEN_KEY } from "../lib/api-client";
+import { ApiError, TOKEN_KEY, registerUnauthorizedHandler } from "../lib/api-client";
 import { authService } from "../services/auth";
 import type { LoginRequest, User } from "../types";
 
@@ -17,8 +17,10 @@ interface AuthState {
   isLoading: boolean;
   isAuthenticated: boolean;
   isAdmin: boolean;
-  login: (credentials: LoginRequest) => Promise<void>;
+  mustChangePassword: boolean;
+  login: (credentials: LoginRequest) => Promise<User>;
   logout: () => void;
+  updateSession: (user: User, accessToken: string) => void;
 }
 
 const AuthContext = createContext<AuthState | null>(null);
@@ -56,17 +58,33 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
-  const login = useCallback(async (credentials: LoginRequest) => {
+  const login = useCallback(async (credentials: LoginRequest): Promise<User> => {
     const { user: u, access_token } = await authService.login(credentials);
     localStorage.setItem(TOKEN_KEY, access_token);
     setUser(u);
     setIsLoading(false);
+    return u;
+  }, []);
+
+  const updateSession = useCallback((u: User, accessToken: string) => {
+    localStorage.setItem(TOKEN_KEY, accessToken);
+    setUser(u);
   }, []);
 
   const logout = useCallback(() => {
     localStorage.removeItem(TOKEN_KEY);
     setUser(null);
   }, []);
+
+  // Register the global 401 handler with the API client.
+  // Re-registers whenever user or logout changes so the closure always sees
+  // the current user value. The handler only acts when a session is active
+  // (user !== null) so a 401 from the login form is correctly ignored.
+  useEffect(() => {
+    registerUnauthorizedHandler(() => {
+      if (user !== null) logout();
+    });
+  }, [user, logout]);
 
   return (
     <AuthContext.Provider
@@ -75,8 +93,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         isLoading,
         isAuthenticated: user !== null,
         isAdmin: user?.role === "admin",
+        mustChangePassword: user?.must_change_password === true,
         login,
         logout,
+        updateSession,
       }}
     >
       {children}

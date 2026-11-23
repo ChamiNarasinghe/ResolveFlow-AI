@@ -1,6 +1,7 @@
 import { apiClient } from "../lib/api-client";
 import type {
   AuthResponse,
+  ChangePasswordRequest,
   LoginRequest,
   MeResponse,
   RegisterRequest,
@@ -18,5 +19,9 @@ export const authService = {
 
   me(): Promise<MeResponse> {
     return apiClient.get<MeResponse>("/api/v1/auth/me");
+  },
+
+  changePassword(body: ChangePasswordRequest): Promise<AuthResponse> {
+    return apiClient.post<AuthResponse>("/api/v1/auth/change-password", body);
   },
 };

@@ -49,7 +49,7 @@ export function Modal({
   return (
     <dialog
       ref={dialogRef}
-      className={`w-full ${sizes[size]} rounded-[var(--radius-xl)] border border-[var(--border)] bg-[var(--bg-surface)] p-0 shadow-[var(--shadow-lg)] backdrop:bg-slate-900/50 backdrop:backdrop-blur-sm`}
+      className={`w-[calc(100%-2rem)] ${sizes[size]} mx-auto my-auto max-h-[calc(100dvh-2rem)] overflow-y-auto rounded-[var(--radius-xl)] border border-[var(--border)] bg-[var(--bg-surface)] p-0 shadow-[var(--shadow-lg)] backdrop:bg-slate-900/50 backdrop:backdrop-blur-sm`}
       aria-labelledby="modal-title"
     >
       {/* Header */}

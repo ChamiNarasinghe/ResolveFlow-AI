@@ -3,6 +3,17 @@ import { API_BASE_URL } from "./api-config";
 // ─── Token storage key ────────────────────────────────────────────────────────
 export const TOKEN_KEY = "rf_access_token";
 
+// ─── Global 401 handler ───────────────────────────────────────────────────────
+// One slot for a session-expiry callback registered by AuthProvider.
+// Called whenever any authenticated request receives a 401 response.
+// The login endpoint also returns 401 for wrong credentials — the registered
+// handler must guard against acting when no session is active (see AuthContext).
+let onUnauthorized: (() => void) | null = null;
+
+export function registerUnauthorizedHandler(handler: () => void): void {
+  onUnauthorized = handler;
+}
+
 // ─── API error ────────────────────────────────────────────────────────────────
 
 export class ApiError extends Error {
@@ -63,6 +74,14 @@ async function request<T>(
       } catch {
         // Not valid JSON — use the raw text as-is.
       }
+    }
+
+    // Notify the global handler before throwing so AuthContext can clear the
+    // session and trigger AuthGuard's redirect. The throw still propagates so
+    // callers receive the error, but by the time they process it the redirect
+    // is already in flight and the component will unmount.
+    if (response.status === 401 && onUnauthorized) {
+      onUnauthorized();
     }
 
     throw new ApiError(response.status, message);
