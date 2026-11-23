@@ -102,7 +102,7 @@ ResolveFlow AI is a customer support ticket management system with an AI-powered
 ## Constraints
 
 - CON-1: The Go backend requires PostgreSQL 17 with migration version 3 applied.
-- CON-2: The AI service uses keyword-based classification (no ML model); it is not AI-powered in the machine-learning sense.
+- CON-2: The AI service uses a TF-IDF + Logistic Regression pipeline (scikit-learn) trained on a synthetic dataset of 1,597 tickets. Three independent models predict category, priority, and sentiment.
 - CON-3: `suggested_team_id` and `response_suggestion` fields exist in the schema but are not populated by the current classifier.
 - CON-4: The `manager` role is stored in the database but has no additional route permissions beyond `agent` in the current implementation.
 - CON-5: Comment listing has no pagination (returns all comments for a ticket).
@@ -114,7 +114,7 @@ ResolveFlow AI is a customer support ticket management system with an AI-powered
 
 - Customer-facing portal or external ticket submission API.
 - Email/webhook integrations.
-- ML-based classification (current implementation is keyword-based).
+- Calibrated model probabilities (current confidence scores are raw `predict_proba` outputs, not calibrated posteriors).
 - Suggested team assignment from AI predictions.
 - Automated response suggestions.
 - Multi-tenancy.

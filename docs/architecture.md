@@ -48,7 +48,9 @@ Responsibilities:
 - Auth: `X-API-Key` header validated against `AI_SERVICE_API_KEY`
 
 Responsibilities:
-- Keyword-based ticket classification (category, priority, sentiment, confidence)
+- TF-IDF + Logistic Regression ticket classification (category, priority, sentiment, confidence)
+- Three independent scikit-learn models sharing a single TF-IDF vectorizer (max 10,000 features, unigrams + bigrams)
+- Model version: `tfidf-logreg-v1`
 - Stateless — no database dependency
 - Exposes `POST /api/v1/tickets/classify` and `GET /health`
 
