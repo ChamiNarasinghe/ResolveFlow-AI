@@ -124,3 +124,35 @@ func TestLoadErrorDoesNotExposeSecret(t *testing.T) {
 		t.Error("error message must not contain the secret value")
 	}
 }
+
+func TestLoadAllowedOriginsDefault(t *testing.T) {
+	t.Setenv("JWT_SECRET", testSecret)
+	t.Setenv("CORS_ALLOWED_ORIGINS", "")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(cfg.AllowedOrigins) != 1 || cfg.AllowedOrigins[0] != "http://localhost:3000" {
+		t.Errorf("expected default origin http://localhost:3000, got %v", cfg.AllowedOrigins)
+	}
+}
+
+func TestLoadAllowedOriginsCustom(t *testing.T) {
+	t.Setenv("JWT_SECRET", testSecret)
+	t.Setenv("CORS_ALLOWED_ORIGINS", "https://app.example.com, https://staging.example.com")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(cfg.AllowedOrigins) != 2 {
+		t.Fatalf("expected 2 origins, got %d: %v", len(cfg.AllowedOrigins), cfg.AllowedOrigins)
+	}
+	if cfg.AllowedOrigins[0] != "https://app.example.com" {
+		t.Errorf("unexpected first origin: %s", cfg.AllowedOrigins[0])
+	}
+	if cfg.AllowedOrigins[1] != "https://staging.example.com" {
+		t.Errorf("unexpected second origin: %s", cfg.AllowedOrigins[1])
+	}
+}
