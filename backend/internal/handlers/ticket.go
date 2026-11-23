@@ -364,9 +364,9 @@ func (h *TicketHandler) GetTicketHistory(w http.ResponseWriter, r *http.Request)
 		records = []models.TicketHistory{}
 	}
 
-	totalPages := (total + pageSize - 1) / pageSize
-	if totalPages == 0 {
-		totalPages = 1
+	totalPages := 0
+	if total > 0 {
+		totalPages = (total + pageSize - 1) / pageSize
 	}
 
 	response := map[string]any{
@@ -410,6 +410,13 @@ func (h *TicketHandler) UpdateTicket(w http.ResponseWriter, r *http.Request) {
 	claims, ok := middleware.GetUserClaims(r.Context())
 	if !ok {
 		http.Error(w, `{"error":"authentication required"}`, http.StatusUnauthorized)
+		return
+	}
+
+	// Assignment fields are admin-only. An agent must not set or clear
+	// assigned_team_id or assigned_to via the general update endpoint.
+	if (request.AssignedTeamID.Set || request.AssignedTo.Set) && claims.Role != "admin" {
+		http.Error(w, `{"error":"admin access required"}`, http.StatusForbidden)
 		return
 	}
 
