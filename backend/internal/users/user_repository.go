@@ -26,17 +26,18 @@ func NewUserRepository(db *pgxpool.Pool) *UserRepository {
 	return &UserRepository{db: db}
 }
 
-// Create creates a new user with the agent role and returns the public user details.
+// Create creates a new agent account (self-registration). must_change_password = FALSE.
 func (r *UserRepository) Create(
 	ctx context.Context,
 	fullName string,
 	email string,
 	passwordHash string,
 ) (*models.User, error) {
-	return r.createWithRole(ctx, fullName, email, passwordHash, "agent")
+	return r.createWithRole(ctx, fullName, email, passwordHash, "agent", false)
 }
 
-// CreateWithRole creates a new user with an explicit role and returns the public user details.
+// CreateWithRole creates a new user with an explicit role. must_change_password = FALSE.
+// Used by Bootstrap path only — provisioned users go through CreateProvisioned.
 func (r *UserRepository) CreateWithRole(
 	ctx context.Context,
 	fullName string,
@@ -44,17 +45,30 @@ func (r *UserRepository) CreateWithRole(
 	passwordHash string,
 	role string,
 ) (*models.User, error) {
-	return r.createWithRole(ctx, fullName, email, passwordHash, role)
+	return r.createWithRole(ctx, fullName, email, passwordHash, role, false)
+}
+
+// CreateProvisioned creates a new user with an explicit role and sets
+// must_change_password = TRUE. Used exclusively by the admin provisioning path.
+func (r *UserRepository) CreateProvisioned(
+	ctx context.Context,
+	fullName string,
+	email string,
+	passwordHash string,
+	role string,
+) (*models.User, error) {
+	return r.createWithRole(ctx, fullName, email, passwordHash, role, true)
 }
 
 func (r *UserRepository) createWithRole(
 	ctx context.Context,
 	fullName, email, passwordHash, role string,
+	mustChangePassword bool,
 ) (*models.User, error) {
 	query := `
-		INSERT INTO users (full_name, email, password_hash, role)
-		VALUES ($1, $2, $3, $4)
-		RETURNING id, full_name, email, role, is_active, created_at, updated_at
+		INSERT INTO users (full_name, email, password_hash, role, must_change_password)
+		VALUES ($1, $2, $3, $4, $5)
+		RETURNING id, full_name, email, role, is_active, must_change_password, created_at, updated_at
 	`
 
 	var user models.User
@@ -66,12 +80,14 @@ func (r *UserRepository) createWithRole(
 		email,
 		passwordHash,
 		role,
+		mustChangePassword,
 	).Scan(
 		&user.ID,
 		&user.FullName,
 		&user.Email,
 		&user.Role,
 		&user.IsActive,
+		&user.MustChangePassword,
 		&user.CreatedAt,
 		&user.UpdatedAt,
 	)
@@ -119,6 +135,7 @@ const bootstrapLockID int64 = 7583920461
 //  4. Commit.
 //
 // passwordHash must already be a bcrypt hash; plaintext is never accepted.
+// must_change_password is always FALSE for the bootstrap admin.
 func (r *UserRepository) BootstrapAdmin(
 	ctx context.Context,
 	fullName, email, passwordHash string,
@@ -154,11 +171,11 @@ func (r *UserRepository) BootstrapAdmin(
 		return nil, ErrAdminExists
 	}
 
-	// Insert the admin row.
+	// Insert the admin row. must_change_password = FALSE (operator-configured account).
 	const q = `
-		INSERT INTO users (full_name, email, password_hash, role)
-		VALUES ($1, $2, $3, 'admin')
-		RETURNING id, full_name, email, role, is_active, created_at, updated_at
+		INSERT INTO users (full_name, email, password_hash, role, must_change_password)
+		VALUES ($1, $2, $3, 'admin', FALSE)
+		RETURNING id, full_name, email, role, is_active, must_change_password, created_at, updated_at
 	`
 	var user models.User
 	if err := tx.QueryRow(ctx, q, fullName, email, passwordHash).Scan(
@@ -167,6 +184,7 @@ func (r *UserRepository) BootstrapAdmin(
 		&user.Email,
 		&user.Role,
 		&user.IsActive,
+		&user.MustChangePassword,
 		&user.CreatedAt,
 		&user.UpdatedAt,
 	); err != nil {
@@ -191,7 +209,7 @@ func (r *UserRepository) GetByEmail(
 ) (*models.User, string, error) {
 	query := `
 		SELECT id, full_name, email, password_hash,
-		       role, is_active, created_at, updated_at
+		       role, is_active, must_change_password, created_at, updated_at
 		FROM users
 		WHERE email = $1
 	`
@@ -206,6 +224,7 @@ func (r *UserRepository) GetByEmail(
 		&passwordHash,
 		&user.Role,
 		&user.IsActive,
+		&user.MustChangePassword,
 		&user.CreatedAt,
 		&user.UpdatedAt,
 	)
@@ -227,7 +246,7 @@ func (r *UserRepository) GetByID(
 	userID string,
 ) (*models.User, error) {
 	query := `
-		SELECT id, full_name, email, role, is_active, created_at, updated_at
+		SELECT id, full_name, email, role, is_active, must_change_password, created_at, updated_at
 		FROM users
 		WHERE id = $1
 	`
@@ -240,6 +259,7 @@ func (r *UserRepository) GetByID(
 		&user.Email,
 		&user.Role,
 		&user.IsActive,
+		&user.MustChangePassword,
 		&user.CreatedAt,
 		&user.UpdatedAt,
 	)
@@ -253,4 +273,48 @@ func (r *UserRepository) GetByID(
 	}
 
 	return &user, nil
+}
+
+// GetPasswordHash retrieves only the stored bcrypt hash for a user.
+// The hash is never included in the User model and is only used for
+// current-password verification during a password change.
+func (r *UserRepository) GetPasswordHash(
+	ctx context.Context,
+	userID string,
+) (string, error) {
+	var hash string
+	err := r.db.QueryRow(ctx,
+		`SELECT password_hash FROM users WHERE id = $1`,
+		userID,
+	).Scan(&hash)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", pgx.ErrNoRows
+		}
+		return "", fmt.Errorf("failed to retrieve password hash: %w", err)
+	}
+	return hash, nil
+}
+
+// UpdatePassword atomically replaces the password hash and clears
+// must_change_password for the given user.
+func (r *UserRepository) UpdatePassword(
+	ctx context.Context,
+	userID string,
+	newPasswordHash string,
+) error {
+	tag, err := r.db.Exec(ctx, `
+		UPDATE users
+		SET password_hash        = $2,
+		    must_change_password = FALSE,
+		    updated_at           = NOW()
+		WHERE id = $1
+	`, userID, newPasswordHash)
+	if err != nil {
+		return fmt.Errorf("failed to update password: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return pgx.ErrNoRows
+	}
+	return nil
 }
