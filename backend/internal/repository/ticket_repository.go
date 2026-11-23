@@ -546,12 +546,14 @@ func (r *TicketRepository) AssignTeam(
 	defer tx.Rollback(ctx) //nolint:errcheck
 
 	// Lock the row and read the current assigned_team_id.
+	// The deleted_at IS NULL filter ensures soft-deleted tickets are treated
+	// as not found, consistent with GetByID and List.
 	var current models.Ticket
 	err = tx.QueryRow(ctx,
 		`SELECT id, ticket_number, subject, description, customer_name, customer_email,
 		        status, priority, channel, category, assigned_team_id, assigned_to,
 		        created_by, created_at, updated_at, resolved_at
-		   FROM tickets WHERE id = $1::uuid FOR UPDATE`, ticketID,
+		   FROM tickets WHERE id = $1::uuid AND deleted_at IS NULL FOR UPDATE`, ticketID,
 	).Scan(
 		&current.ID, &current.TicketNumber, &current.Subject, &current.Description,
 		&current.CustomerName, &current.CustomerEmail, &current.Status, &current.Priority,
