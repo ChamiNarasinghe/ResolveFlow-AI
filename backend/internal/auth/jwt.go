@@ -9,9 +9,10 @@ import (
 )
 
 type Claims struct {
-	UserID string `json:"user_id"`
-	Email  string `json:"email"`
-	Role   string `json:"role"`
+	UserID             string `json:"user_id"`
+	Email              string `json:"email"`
+	Role               string `json:"role"`
+	MustChangePassword bool   `json:"must_change_password"`
 
 	jwt.RegisteredClaims
 }
@@ -40,13 +41,15 @@ func (s *JWTService) GenerateToken(
 	userID string,
 	email string,
 	role string,
+	mustChangePassword bool,
 ) (string, error) {
 	now := time.Now()
 
 	claims := Claims{
-		UserID: userID,
-		Email:  email,
-		Role:   role,
+		UserID:             userID,
+		Email:              email,
+		Role:               role,
+		MustChangePassword: mustChangePassword,
 		RegisteredClaims: jwt.RegisteredClaims{
 			IssuedAt:  jwt.NewNumericDate(now),
 			ExpiresAt: jwt.NewNumericDate(now.Add(s.expiration)),
