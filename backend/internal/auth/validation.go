@@ -139,3 +139,46 @@ func (r *ProvisionRequest) Validate() error {
 
 	return nil
 }
+
+// ChangePasswordRequest is used by authenticated users to change their password.
+type ChangePasswordRequest struct {
+	CurrentPassword string `json:"current_password"`
+	NewPassword     string `json:"new_password"`
+	ConfirmPassword string `json:"confirm_password"`
+}
+
+func (r *ChangePasswordRequest) Validate() error {
+	if r.CurrentPassword == "" {
+		return fmt.Errorf("%w: current password is required", ErrValidation)
+	}
+
+	if len(r.NewPassword) < 8 {
+		return fmt.Errorf("%w: password must contain at least 8 characters", ErrValidation)
+	}
+	if len(r.NewPassword) > 72 {
+		return fmt.Errorf("%w: password must not exceed 72 bytes", ErrValidation)
+	}
+
+	var hasLetter, hasNumber bool
+	for _, ch := range r.NewPassword {
+		if unicode.IsLetter(ch) {
+			hasLetter = true
+		}
+		if unicode.IsNumber(ch) {
+			hasNumber = true
+		}
+	}
+	if !hasLetter || !hasNumber {
+		return fmt.Errorf("%w: password must contain at least one letter and one number", ErrValidation)
+	}
+
+	if r.ConfirmPassword != r.NewPassword {
+		return fmt.Errorf("%w: passwords do not match", ErrValidation)
+	}
+
+	if r.NewPassword == r.CurrentPassword {
+		return fmt.Errorf("%w: new password must differ from current password", ErrValidation)
+	}
+
+	return nil
+}

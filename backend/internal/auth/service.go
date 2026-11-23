@@ -11,17 +11,21 @@ import (
 )
 
 var (
-	ErrInvalidCredentials    = errors.New("invalid email or password")
-	ErrInactiveUser          = errors.New("user account is inactive")
-	ErrUserNotFound          = errors.New("user not found")
+	ErrInvalidCredentials     = errors.New("invalid email or password")
+	ErrInactiveUser           = errors.New("user account is inactive")
+	ErrUserNotFound           = errors.New("user not found")
 	ErrEmailAlreadyRegistered = errors.New("email address is already registered")
 )
 
 var (
-	ErrInvalidRole      = errors.New("invalid role")
-	ErrAdminExists      = errors.New("an administrator account already exists")
+	ErrInvalidRole       = errors.New("invalid role")
+	ErrAdminExists       = errors.New("an administrator account already exists")
 	ErrBootstrapDisabled = errors.New("bootstrap is not configured")
 )
+
+// ErrIncorrectPassword is returned when the supplied current password does not
+// match the stored hash during a password-change request.
+var ErrIncorrectPassword = errors.New("current password is incorrect")
 
 type AuthUserRepository interface {
 	Create(
@@ -32,6 +36,16 @@ type AuthUserRepository interface {
 	) (*models.User, error)
 
 	CreateWithRole(
+		ctx context.Context,
+		fullName string,
+		email string,
+		passwordHash string,
+		role string,
+	) (*models.User, error)
+
+	// CreateProvisioned creates a user with must_change_password = TRUE.
+	// Used exclusively by the admin provisioning path.
+	CreateProvisioned(
 		ctx context.Context,
 		fullName string,
 		email string,
@@ -59,6 +73,13 @@ type AuthUserRepository interface {
 		ctx context.Context,
 		userID string,
 	) (*models.User, error)
+
+	// GetPasswordHash retrieves only the bcrypt hash for a user.
+	// Never exposed through the User model.
+	GetPasswordHash(ctx context.Context, userID string) (string, error)
+
+	// UpdatePassword atomically replaces the hash and clears must_change_password.
+	UpdatePassword(ctx context.Context, userID string, newPasswordHash string) error
 }
 
 type AuthResponse struct {
@@ -82,7 +103,8 @@ func NewAuthService(
 	}
 }
 
-// Register creates a new agent account.
+// Register creates a new agent account (development mode only).
+// must_change_password is FALSE — self-registered users choose their own password.
 func (s *AuthService) Register(
 	ctx context.Context,
 	request RegisterRequest,
@@ -113,6 +135,7 @@ func (s *AuthService) Register(
 		user.ID,
 		user.Email,
 		user.Role,
+		user.MustChangePassword,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate access token: %w", err)
@@ -126,6 +149,7 @@ func (s *AuthService) Register(
 }
 
 // Login authenticates an existing user.
+// The MustChangePassword flag is read from the database and embedded in the JWT.
 func (s *AuthService) Login(
 	ctx context.Context,
 	request LoginRequest,
@@ -164,6 +188,7 @@ func (s *AuthService) Login(
 		user.ID,
 		user.Email,
 		user.Role,
+		user.MustChangePassword,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate access token: %w", err)
@@ -176,7 +201,9 @@ func (s *AuthService) Login(
 	}, nil
 }
 
-// ProvisionUser creates a new user with an explicit role. Only admins may call this.
+// ProvisionUser creates a new user with an explicit role and sets
+// must_change_password = TRUE so the user is forced to change their
+// administrator-supplied initial password on first login.
 func (s *AuthService) ProvisionUser(
 	ctx context.Context,
 	request ProvisionRequest,
@@ -190,7 +217,7 @@ func (s *AuthService) ProvisionUser(
 		return nil, fmt.Errorf("failed to hash password: %w", err)
 	}
 
-	user, err := s.users.CreateWithRole(
+	user, err := s.users.CreateProvisioned(
 		ctx,
 		request.FullName,
 		request.Email,
@@ -212,6 +239,7 @@ func (s *AuthService) ProvisionUser(
 // bootstrap attempt is in progress.
 // It returns ErrBootstrapDisabled if name/email/password are all empty.
 // The atomic lock-count-insert is performed by the repository layer.
+// must_change_password is FALSE — the bootstrap admin is operator-configured.
 func (s *AuthService) Bootstrap(
 	ctx context.Context,
 	fullName, email, password string,
@@ -263,4 +291,62 @@ func (s *AuthService) GetProfile(
 	}
 
 	return user, nil
+}
+
+// ChangePassword verifies the current password, validates the new password,
+// updates the hash atomically, and returns a fresh JWT with
+// MustChangePassword = false.
+func (s *AuthService) ChangePassword(
+	ctx context.Context,
+	userID string,
+	request ChangePasswordRequest,
+) (*AuthResponse, error) {
+	if err := request.Validate(); err != nil {
+		return nil, err
+	}
+
+	currentHash, err := s.users.GetPasswordHash(ctx, userID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrUserNotFound
+		}
+		return nil, fmt.Errorf("failed to retrieve password: %w", err)
+	}
+
+	if err := CheckPassword(request.CurrentPassword, currentHash); err != nil {
+		return nil, ErrIncorrectPassword
+	}
+
+	newHash, err := HashPassword(request.NewPassword)
+	if err != nil {
+		return nil, fmt.Errorf("failed to hash password: %w", err)
+	}
+
+	if err := s.users.UpdatePassword(ctx, userID, newHash); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrUserNotFound
+		}
+		return nil, fmt.Errorf("failed to update password: %w", err)
+	}
+
+	user, err := s.users.GetByID(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to retrieve updated user: %w", err)
+	}
+
+	token, err := s.jwtService.GenerateToken(
+		user.ID,
+		user.Email,
+		user.Role,
+		false, // must_change_password is now cleared
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate access token: %w", err)
+	}
+
+	return &AuthResponse{
+		User:        user,
+		AccessToken: token,
+		TokenType:   "Bearer",
+	}, nil
 }
