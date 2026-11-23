@@ -27,6 +27,12 @@ type AuthService interface {
 		ctx context.Context,
 		userID string,
 	) (*models.User, error)
+
+	ChangePassword(
+		ctx context.Context,
+		userID string,
+		request auth.ChangePasswordRequest,
+	) (*auth.AuthResponse, error)
 }
 
 type AuthHandler struct {
@@ -55,7 +61,6 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, auth.ErrInactiveUser):
 			http.Error(w, "User account is inactive", http.StatusForbidden)
 		case auth.IsValidationError(err):
-			// Safe plain-text message produced by RegisterRequest.Validate.
 			http.Error(w, err.Error(), http.StatusBadRequest)
 		default:
 			slog.Error("registration failed",
@@ -127,4 +132,44 @@ func (h *AuthHandler) Me(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"user": user,
 	})
+}
+
+// ChangePassword handles POST /api/v1/auth/change-password.
+// Requires a valid JWT. Validates the current password, applies the new
+// password, and returns a fresh token with MustChangePassword = false.
+func (h *AuthHandler) ChangePassword(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.GetUserClaims(r.Context())
+	if !ok {
+		http.Error(w, "Authentication required", http.StatusUnauthorized)
+		return
+	}
+
+	var req auth.ChangePasswordRequest
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	response, err := h.service.ChangePassword(r.Context(), claims.UserID, req)
+	if err != nil {
+		switch {
+		case auth.IsValidationError(err):
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		case errors.Is(err, auth.ErrIncorrectPassword):
+			writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "current password is incorrect"})
+		case errors.Is(err, auth.ErrUserNotFound):
+			http.Error(w, "User not found", http.StatusNotFound)
+		default:
+			slog.Error("password change failed",
+				slog.String("request_id", middleware.GetRequestID(r.Context())),
+				slog.String("error", err.Error()),
+			)
+			http.Error(w, "Failed to change password", http.StatusInternalServerError)
+		}
+		return
+	}
+
+	writeJSON(w, http.StatusOK, response)
 }

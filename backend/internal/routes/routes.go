@@ -28,139 +28,127 @@ func NewRouter(
 ) http.Handler {
 	// Rate limiters — cleanup goroutines stop when ctx is cancelled.
 	// Login: 5 req/min. Registration: 3 req/min. General API: 100 req/min.
-	// Limits are per application instance (see RateLimitConfig for details).
-	loginLimiter := middleware.NewRateLimiter(ctx, middleware.RateLimitConfig{RequestsPerMinute: 5})
+	loginLimiter    := middleware.NewRateLimiter(ctx, middleware.RateLimitConfig{RequestsPerMinute: 5})
 	registerLimiter := middleware.NewRateLimiter(ctx, middleware.RateLimitConfig{RequestsPerMinute: 3})
-	apiLimiter := middleware.NewRateLimiter(ctx, middleware.RateLimitConfig{RequestsPerMinute: 100})
+	apiLimiter      := middleware.NewRateLimiter(ctx, middleware.RateLimitConfig{RequestsPerMinute: 100})
 
 	mux := http.NewServeMux()
 
-	// Health endpoints — no rate limiting.
+	// Health endpoints — no auth, no rate limiting.
 	mux.HandleFunc("GET /health", handlers.HealthHandler)
 	mux.HandleFunc("GET /health/ready", handlers.ReadinessHandler(db))
 	mux.HandleFunc("GET /health/ai", handlers.AIReadinessHandler(services.NewAIClient(aiServiceURL, aiServiceAPIKey)))
 
 	// Authentication services
-	userRepo := users.NewUserRepository(db)
+	userRepo    := users.NewUserRepository(db)
 	authService := auth.NewAuthService(userRepo, jwtService)
 	authHandler := handlers.NewAuthHandler(authService)
 
-	// Public login endpoint — strict rate limit.
+	// Public login endpoint — strict rate limit, no JWT required.
 	mux.Handle("POST /api/v1/auth/login",
 		loginLimiter.Limit(http.HandlerFunc(authHandler.Login)))
 
-	// JWT authentication middleware
+	// JWT authentication middleware — used by all protected routes.
 	authMiddleware := middleware.AuthMiddleware(jwtService)
+
+	// GET /api/v1/auth/me — exempt from RequirePasswordChanged so that a
+	// forced-change user can still fetch their profile (frontend needs it).
 	mux.Handle(
 		"GET /api/v1/auth/me",
 		apiLimiter.Limit(authMiddleware(http.HandlerFunc(authHandler.Me))),
 	)
 
+	// POST /api/v1/auth/change-password — exempt from RequirePasswordChanged
+	// (this is the endpoint that clears the flag).
+	mux.Handle(
+		"POST /api/v1/auth/change-password",
+		apiLimiter.Limit(authMiddleware(http.HandlerFunc(authHandler.ChangePassword))),
+	)
+
 	// Registration is enabled only in development mode.
+	// Self-registered users never have must_change_password set.
 	if allowRegistration {
 		mux.Handle("POST /api/v1/auth/register",
 			registerLimiter.Limit(http.HandlerFunc(authHandler.Register)))
 	}
 
-	// Shared middleware
-	adminOnly := middleware.RequireRoles("admin")
+	// Shared middleware helpers.
+	adminOnly            := middleware.RequireRoles("admin")
+	requirePwChanged     := middleware.RequirePasswordChanged
 
-	// Ticket endpoints
-	ticketRepo := repository.NewTicketRepository(db)
+	// ── Ticket endpoints ──────────────────────────────────────────────────────
 
-	// AI classification dependencies
-	aiClient := services.NewAIClient(aiServiceURL, aiServiceAPIKey)
-	predictionRepo := repository.NewAIPredictionRepository(db)
+	ticketRepo      := repository.NewTicketRepository(db)
+	aiClient        := services.NewAIClient(aiServiceURL, aiServiceAPIKey)
+	predictionRepo  := repository.NewAIPredictionRepository(db)
 
-	// AI prediction endpoints
-	aiPredictionHandler := handlers.NewAIPredictionHandler(
-		ticketRepo,
-		predictionRepo,
-	)
+	aiPredictionHandler := handlers.NewAIPredictionHandler(ticketRepo, predictionRepo)
+	ticketHandler       := handlers.NewTicketHandlerWithAI(ticketRepo, aiClient, predictionRepo)
 
-	ticketHandler := handlers.NewTicketHandlerWithAI(
-		ticketRepo,
-		aiClient,
-		predictionRepo,
-	)
+	commentRepo    := repository.NewCommentRepository(db)
+	commentHandler := handlers.NewCommentHandler(commentRepo, ticketRepo)
 
-	// Comment endpoints
-	commentRepo := repository.NewCommentRepository(db)
+	mux.Handle("POST /api/v1/tickets/{id}/comments",
+		apiLimiter.Limit(authMiddleware(requirePwChanged(http.HandlerFunc(commentHandler.CreateComment)))))
 
-	commentHandler := handlers.NewCommentHandler(
-		commentRepo,
-		ticketRepo,
-	)
-
-	mux.Handle(
-		"POST /api/v1/tickets/{id}/comments",
-		apiLimiter.Limit(authMiddleware(http.HandlerFunc(commentHandler.CreateComment))),
-	)
-
-	mux.Handle(
-		"GET /api/v1/tickets/{id}/comments",
-		apiLimiter.Limit(authMiddleware(http.HandlerFunc(commentHandler.ListComments))),
-	)
+	mux.Handle("GET /api/v1/tickets/{id}/comments",
+		apiLimiter.Limit(authMiddleware(requirePwChanged(http.HandlerFunc(commentHandler.ListComments)))))
 
 	mux.Handle("POST /api/v1/tickets",
-		apiLimiter.Limit(authMiddleware(http.HandlerFunc(ticketHandler.CreateTicket))))
+		apiLimiter.Limit(authMiddleware(requirePwChanged(http.HandlerFunc(ticketHandler.CreateTicket)))))
 
 	mux.Handle("GET /api/v1/tickets",
-		apiLimiter.Limit(authMiddleware(http.HandlerFunc(ticketHandler.ListTickets))))
+		apiLimiter.Limit(authMiddleware(requirePwChanged(http.HandlerFunc(ticketHandler.ListTickets)))))
 
 	mux.Handle("GET /api/v1/tickets/{id}",
-		apiLimiter.Limit(authMiddleware(http.HandlerFunc(ticketHandler.GetTicket))))
+		apiLimiter.Limit(authMiddleware(requirePwChanged(http.HandlerFunc(ticketHandler.GetTicket)))))
 
 	mux.Handle("PATCH /api/v1/tickets/{id}",
-		apiLimiter.Limit(authMiddleware(http.HandlerFunc(ticketHandler.UpdateTicket))))
+		apiLimiter.Limit(authMiddleware(requirePwChanged(http.HandlerFunc(ticketHandler.UpdateTicket)))))
 
 	mux.Handle("DELETE /api/v1/tickets/{id}",
-		apiLimiter.Limit(authMiddleware(adminOnly(http.HandlerFunc(ticketHandler.DeleteTicket)))))
+		apiLimiter.Limit(authMiddleware(requirePwChanged(adminOnly(http.HandlerFunc(ticketHandler.DeleteTicket))))))
 
-	mux.Handle(
-		"GET /api/v1/tickets/{id}/history",
-		apiLimiter.Limit(authMiddleware(http.HandlerFunc(ticketHandler.GetTicketHistory))),
-	)
+	mux.Handle("GET /api/v1/tickets/{id}/history",
+		apiLimiter.Limit(authMiddleware(requirePwChanged(http.HandlerFunc(ticketHandler.GetTicketHistory)))))
 
-	mux.Handle(
-		"GET /api/v1/tickets/{id}/ai-prediction",
-		apiLimiter.Limit(authMiddleware(http.HandlerFunc(aiPredictionHandler.GetLatestPrediction))),
-	)
+	mux.Handle("GET /api/v1/tickets/{id}/ai-prediction",
+		apiLimiter.Limit(authMiddleware(requirePwChanged(http.HandlerFunc(aiPredictionHandler.GetLatestPrediction)))))
 
-	// Team endpoints
-	teamRepo := repository.NewTeamRepository(db)
+	mux.Handle("PATCH /api/v1/tickets/{id}/assignment",
+		apiLimiter.Limit(authMiddleware(requirePwChanged(adminOnly(http.HandlerFunc(ticketHandler.AssignTicket))))))
+
+	// ── Team endpoints ────────────────────────────────────────────────────────
+
+	teamRepo    := repository.NewTeamRepository(db)
 	teamHandler := handlers.NewTeamHandler(teamRepo)
 
-	// Admin user provisioning
-	adminHandler := handlers.NewAdminHandler(authService)
-	mux.Handle("POST /api/v1/admin/users",
-		apiLimiter.Limit(authMiddleware(adminOnly(http.HandlerFunc(adminHandler.CreateUser)))))
-
-	mux.Handle(
-		"PATCH /api/v1/tickets/{id}/assignment",
-		apiLimiter.Limit(authMiddleware(adminOnly(http.HandlerFunc(ticketHandler.AssignTicket)))),
-	)
-
 	mux.Handle("POST /api/v1/teams",
-		apiLimiter.Limit(authMiddleware(adminOnly(http.HandlerFunc(teamHandler.CreateTeam)))))
+		apiLimiter.Limit(authMiddleware(requirePwChanged(adminOnly(http.HandlerFunc(teamHandler.CreateTeam))))))
 
 	mux.Handle("GET /api/v1/teams",
-		apiLimiter.Limit(authMiddleware(http.HandlerFunc(teamHandler.ListTeams))))
+		apiLimiter.Limit(authMiddleware(requirePwChanged(http.HandlerFunc(teamHandler.ListTeams)))))
 
 	mux.Handle("GET /api/v1/teams/{id}",
-		apiLimiter.Limit(authMiddleware(http.HandlerFunc(teamHandler.GetTeam))))
+		apiLimiter.Limit(authMiddleware(requirePwChanged(http.HandlerFunc(teamHandler.GetTeam)))))
 
 	mux.Handle("PATCH /api/v1/teams/{id}",
-		apiLimiter.Limit(authMiddleware(adminOnly(http.HandlerFunc(teamHandler.UpdateTeam)))))
+		apiLimiter.Limit(authMiddleware(requirePwChanged(adminOnly(http.HandlerFunc(teamHandler.UpdateTeam))))))
 
 	mux.Handle("POST /api/v1/teams/{id}/members",
-		apiLimiter.Limit(authMiddleware(adminOnly(http.HandlerFunc(teamHandler.AddTeamMember)))))
+		apiLimiter.Limit(authMiddleware(requirePwChanged(adminOnly(http.HandlerFunc(teamHandler.AddTeamMember))))))
 
 	mux.Handle("GET /api/v1/teams/{id}/members",
-		apiLimiter.Limit(authMiddleware(http.HandlerFunc(teamHandler.ListTeamMembers))))
+		apiLimiter.Limit(authMiddleware(requirePwChanged(http.HandlerFunc(teamHandler.ListTeamMembers)))))
 
 	mux.Handle("DELETE /api/v1/teams/{id}/members/{userId}",
-		apiLimiter.Limit(authMiddleware(adminOnly(http.HandlerFunc(teamHandler.RemoveTeamMember)))))
+		apiLimiter.Limit(authMiddleware(requirePwChanged(adminOnly(http.HandlerFunc(teamHandler.RemoveTeamMember))))))
+
+	// ── Admin endpoints ───────────────────────────────────────────────────────
+
+	adminHandler := handlers.NewAdminHandler(authService)
+	mux.Handle("POST /api/v1/admin/users",
+		apiLimiter.Limit(authMiddleware(requirePwChanged(adminOnly(http.HandlerFunc(adminHandler.CreateUser))))))
 
 	// Global middleware chain: CORS → RequestID → RequestLogger → Recovery → mux.
 	// CORS runs outermost so OPTIONS preflights are handled before auth.
