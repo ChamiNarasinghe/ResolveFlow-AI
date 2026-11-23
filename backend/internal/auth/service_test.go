@@ -126,6 +126,43 @@ func (m *mockAuthUserRepository) GetByID(
 	return m.user, nil
 }
 
+func (m *mockAuthUserRepository) CreateProvisioned(
+	ctx context.Context,
+	fullName, email, passwordHash, role string,
+) (*models.User, error) {
+	if m.createErr != nil {
+		return nil, m.createErr
+	}
+	m.passwordHash = passwordHash
+	m.createdRole = role
+	m.user = &models.User{
+		ID:                 "user-456",
+		FullName:           fullName,
+		Email:              email,
+		Role:               role,
+		IsActive:           true,
+		MustChangePassword: true,
+		CreatedAt:          time.Now(),
+		UpdatedAt:          time.Now(),
+	}
+	return m.user, nil
+}
+
+func (m *mockAuthUserRepository) GetPasswordHash(ctx context.Context, userID string) (string, error) {
+	if m.getErr != nil {
+		return "", m.getErr
+	}
+	return m.passwordHash, nil
+}
+
+func (m *mockAuthUserRepository) UpdatePassword(ctx context.Context, userID, newPasswordHash string) error {
+	if m.createErr != nil {
+		return m.createErr
+	}
+	m.passwordHash = newPasswordHash
+	return nil
+}
+
 func newTestAuthService(t *testing.T, repo *mockAuthUserRepository) *AuthService {
 	t.Helper()
 
@@ -319,6 +356,9 @@ func TestAuthServiceProvisionUserAgent(t *testing.T) {
 	if user.Role != "agent" {
 		t.Errorf("expected agent role, got %s", user.Role)
 	}
+	if !user.MustChangePassword {
+		t.Error("expected MustChangePassword = true for provisioned agent")
+	}
 	if repo.passwordHash == "Password123" || repo.passwordHash == "" {
 		t.Error("password was not securely hashed")
 	}
@@ -340,6 +380,9 @@ func TestAuthServiceProvisionUserAdmin(t *testing.T) {
 	}
 	if user.Role != "admin" {
 		t.Errorf("expected admin role, got %s", user.Role)
+	}
+	if !user.MustChangePassword {
+		t.Error("expected MustChangePassword = true for provisioned admin")
 	}
 }
 

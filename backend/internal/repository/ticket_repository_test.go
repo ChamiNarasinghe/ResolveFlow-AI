@@ -1011,3 +1011,25 @@ func TestSoftDeleteTransactionRollbackOnHistoryFailure(t *testing.T) {
 		t.Error("expected deleted_at to remain NULL after rollback")
 	}
 }
+
+// TestAssignTeamSoftDeletedTicketReturnsNotFound verifies that AssignTeam
+// returns ErrTicketNotFound when the target ticket has been soft-deleted,
+// confirming Fix 3 (AND deleted_at IS NULL added to the lock query).
+func TestAssignTeamSoftDeletedTicketReturnsNotFound(t *testing.T) {
+	repo, pool := setupTestRepository(t)
+	ctx := context.Background()
+	actorID := createTestUser(t, pool)
+	ticketID := createTicketForUpdateTest(t, repo, pool)
+	teamID := createTestTeam(t, pool)
+
+	// Soft-delete the ticket first.
+	if err := repo.SoftDelete(ctx, ticketID, actorID); err != nil {
+		t.Fatalf("soft delete failed: %v", err)
+	}
+
+	// Attempting to assign a team to a soft-deleted ticket must return ErrTicketNotFound.
+	_, err := repo.AssignTeam(ctx, ticketID, &teamID, actorID)
+	if !errors.Is(err, ErrTicketNotFound) {
+		t.Errorf("expected ErrTicketNotFound for soft-deleted ticket, got %v", err)
+	}
+}

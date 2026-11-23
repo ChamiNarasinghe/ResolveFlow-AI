@@ -1555,3 +1555,181 @@ func TestDeleteTicketRepositoryFailure(t *testing.T) {
 		t.Error("response must not expose internal error details")
 	}
 }
+
+// --- UpdateTicket assignment authorization tests (Fix 1) ---
+
+const updateTicketID = "a2f66976-199f-4ec9-8774-21f937befe13"
+const updateTeamUUID = "c4d88198-3bb1-6eeb-aa96-43f159dffe35"
+const updateUserUUID = "d5e99209-4cc2-7ffc-bb07-54f26ae0ff46"
+
+func newUpdateRequest(ticketID, body string) *http.Request {
+	req := httptest.NewRequest(http.MethodPatch,
+		"/api/v1/tickets/"+ticketID,
+		strings.NewReader(body))
+	req.SetPathValue("id", ticketID)
+	return req
+}
+
+// TestUpdateTicketAgentCannotSetAssignedTeamID verifies that an agent receives
+// 403 when attempting to set assigned_team_id via the general update endpoint.
+func TestUpdateTicketAgentCannotSetAssignedTeamID(t *testing.T) {
+	repo := &mockTicketRepository{}
+	h := NewTicketHandler(repo)
+
+	body := `{"assigned_team_id":"` + updateTeamUUID + `"}`
+	req := newUpdateRequest(updateTicketID, body)
+	req = withAgentClaims(req)
+	rec := httptest.NewRecorder()
+	h.UpdateTicket(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("expected 403, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if repo.updateCalled {
+		t.Error("repository must not be called when agent attempts assignment")
+	}
+}
+
+// TestUpdateTicketAgentCannotSetAssignedTo verifies that an agent receives
+// 403 when attempting to set assigned_to via the general update endpoint.
+func TestUpdateTicketAgentCannotSetAssignedTo(t *testing.T) {
+	repo := &mockTicketRepository{}
+	h := NewTicketHandler(repo)
+
+	body := `{"assigned_to":"` + updateUserUUID + `"}`
+	req := newUpdateRequest(updateTicketID, body)
+	req = withAgentClaims(req)
+	rec := httptest.NewRecorder()
+	h.UpdateTicket(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("expected 403, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if repo.updateCalled {
+		t.Error("repository must not be called when agent attempts assignment")
+	}
+}
+
+// TestUpdateTicketAgentCannotClearAssignedTeamID verifies that an agent
+// cannot unassign a ticket (explicit null) via the general update endpoint.
+func TestUpdateTicketAgentCannotClearAssignedTeamID(t *testing.T) {
+	repo := &mockTicketRepository{}
+	h := NewTicketHandler(repo)
+
+	body := `{"assigned_team_id":null}`
+	req := newUpdateRequest(updateTicketID, body)
+	req = withAgentClaims(req)
+	rec := httptest.NewRecorder()
+	h.UpdateTicket(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("expected 403 for null assigned_team_id by agent, got %d", rec.Code)
+	}
+	if repo.updateCalled {
+		t.Error("repository must not be called when agent attempts to clear assignment")
+	}
+}
+
+// TestUpdateTicketAgentCannotClearAssignedTo verifies that an agent cannot
+// clear assigned_to (explicit null) via the general update endpoint.
+func TestUpdateTicketAgentCannotClearAssignedTo(t *testing.T) {
+	repo := &mockTicketRepository{}
+	h := NewTicketHandler(repo)
+
+	body := `{"assigned_to":null}`
+	req := newUpdateRequest(updateTicketID, body)
+	req = withAgentClaims(req)
+	rec := httptest.NewRecorder()
+	h.UpdateTicket(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("expected 403 for null assigned_to by agent, got %d", rec.Code)
+	}
+	if repo.updateCalled {
+		t.Error("repository must not be called when agent attempts to clear assignment")
+	}
+}
+
+// TestUpdateTicketAdminCanSetAssignedTeamID verifies that an admin can set
+// assigned_team_id via the general update endpoint.
+func TestUpdateTicketAdminCanSetAssignedTeamID(t *testing.T) {
+	teamID := updateTeamUUID
+	repo := &mockTicketRepository{
+		updateResult: &models.Ticket{
+			ID:             updateTicketID,
+			Status:         "open",
+			Priority:       "medium",
+			AssignedTeamID: &teamID,
+		},
+	}
+	h := NewTicketHandler(repo)
+
+	body := `{"assigned_team_id":"` + updateTeamUUID + `"}`
+	req := newUpdateRequest(updateTicketID, body)
+	req = withAdminClaims(req)
+	rec := httptest.NewRecorder()
+	h.UpdateTicket(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("expected 200 for admin setting assigned_team_id, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !repo.updateCalled {
+		t.Error("expected repository Update to be called for admin")
+	}
+}
+
+// TestUpdateTicketAgentCanUpdatePermittedFields verifies that an agent can
+// still update status and priority without triggering the assignment guard.
+func TestUpdateTicketAgentCanUpdatePermittedFields(t *testing.T) {
+	repo := &mockTicketRepository{
+		updateResult: &models.Ticket{
+			ID:       updateTicketID,
+			Status:   "in_progress",
+			Priority: "high",
+		},
+	}
+	h := NewTicketHandler(repo)
+
+	body := `{"status":"in_progress","priority":"high"}`
+	req := newUpdateRequest(updateTicketID, body)
+	req = withAgentClaims(req)
+	rec := httptest.NewRecorder()
+	h.UpdateTicket(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("expected 200 for agent updating permitted fields, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !repo.updateCalled {
+		t.Error("expected repository Update to be called")
+	}
+}
+
+// --- GetTicketHistory empty pagination test (Fix 2) ---
+
+// TestGetTicketHistoryEmptyPagination verifies that when there are no history
+// records, total == 0 and total_pages == 0 (not 1).
+func TestGetTicketHistoryEmptyPagination(t *testing.T) {
+	mockRepo := &mockTicketRepository{
+		getByIDResult: &models.Ticket{ID: historyTicketID},
+		historyCount:  0,
+		historyResult: nil,
+	}
+	handler := NewTicketHandler(mockRepo)
+	rec := httptest.NewRecorder()
+
+	handler.GetTicketHistory(rec, newHistoryRequest(historyTicketID, ""))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `"total":0`) {
+		t.Error("expected total = 0 in pagination")
+	}
+	if !strings.Contains(body, `"total_pages":0`) {
+		t.Errorf("expected total_pages = 0 when history is empty, got body: %s", body)
+	}
+	if !strings.Contains(body, `"data":[]`) {
+		t.Error("expected empty data array")
+	}
+}

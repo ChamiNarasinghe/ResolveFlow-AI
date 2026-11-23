@@ -337,3 +337,173 @@ func TestBootstrapAdminConcurrentAttempts(t *testing.T) {
 		t.Errorf("expected admin count to increase by 1: before=%d after=%d", count, after)
 	}
 }
+
+// --- must_change_password flag ---
+
+// TestCreateProvisionedSetsMustChangePassword verifies that CreateProvisioned
+// writes must_change_password = TRUE to the database and returns the flag set.
+func TestCreateProvisionedSetsMustChangePassword(t *testing.T) {
+	repo, pool := setupUserRepo(t)
+	email := uniqueEmail("provisioned")
+	t.Cleanup(func() { deleteUserByEmail(t, pool, email) })
+
+	user, err := repo.CreateProvisioned(context.Background(), "Provisioned Agent", email, bcryptHash(t, "Password123"), "agent")
+	if err != nil {
+		t.Fatalf("CreateProvisioned() error = %v", err)
+	}
+	if !user.MustChangePassword {
+		t.Error("expected MustChangePassword = true for provisioned user, got false")
+	}
+
+	// Verify the value is persisted in the database, not just set in memory.
+	var stored bool
+	if err := pool.QueryRow(context.Background(),
+		`SELECT must_change_password FROM users WHERE email = $1`, email,
+	).Scan(&stored); err != nil {
+		t.Fatalf("failed to read must_change_password from DB: %v", err)
+	}
+	if !stored {
+		t.Error("expected must_change_password = TRUE in database for provisioned user")
+	}
+}
+
+// TestCreateWithRoleDoesNotSetMustChangePassword verifies that CreateWithRole
+// always writes must_change_password = FALSE and returns the flag unset.
+func TestCreateWithRoleDoesNotSetMustChangePassword(t *testing.T) {
+	repo, pool := setupUserRepo(t)
+	email := uniqueEmail("regular-agent")
+	t.Cleanup(func() { deleteUserByEmail(t, pool, email) })
+
+	user, err := repo.CreateWithRole(context.Background(), "Regular Agent", email, bcryptHash(t, "Password123"), "agent")
+	if err != nil {
+		t.Fatalf("CreateWithRole() error = %v", err)
+	}
+	if user.MustChangePassword {
+		t.Error("expected MustChangePassword = false for CreateWithRole user, got true")
+	}
+
+	var stored bool
+	if err := pool.QueryRow(context.Background(),
+		`SELECT must_change_password FROM users WHERE email = $1`, email,
+	).Scan(&stored); err != nil {
+		t.Fatalf("failed to read must_change_password from DB: %v", err)
+	}
+	if stored {
+		t.Error("expected must_change_password = FALSE in database for CreateWithRole user")
+	}
+}
+
+// TestGetByEmailRetrievesMustChangePasswordFlag verifies that GetByEmail
+// returns the correct flag value for both provisioned and regular users.
+func TestGetByEmailRetrievesMustChangePasswordFlag(t *testing.T) {
+	repo, pool := setupUserRepo(t)
+
+	provEmail := uniqueEmail("getbyemail-prov")
+	regEmail := uniqueEmail("getbyemail-reg")
+	t.Cleanup(func() {
+		deleteUserByEmail(t, pool, provEmail)
+		deleteUserByEmail(t, pool, regEmail)
+	})
+
+	if _, err := repo.CreateProvisioned(context.Background(), "Prov", provEmail, bcryptHash(t, "Password123"), "agent"); err != nil {
+		t.Fatalf("CreateProvisioned() error = %v", err)
+	}
+	if _, err := repo.CreateWithRole(context.Background(), "Reg", regEmail, bcryptHash(t, "Password123"), "agent"); err != nil {
+		t.Fatalf("CreateWithRole() error = %v", err)
+	}
+
+	provUser, _, err := repo.GetByEmail(context.Background(), provEmail)
+	if err != nil {
+		t.Fatalf("GetByEmail(provisioned) error = %v", err)
+	}
+	if !provUser.MustChangePassword {
+		t.Error("GetByEmail: expected MustChangePassword = true for provisioned user")
+	}
+
+	regUser, _, err := repo.GetByEmail(context.Background(), regEmail)
+	if err != nil {
+		t.Fatalf("GetByEmail(regular) error = %v", err)
+	}
+	if regUser.MustChangePassword {
+		t.Error("GetByEmail: expected MustChangePassword = false for regular user")
+	}
+}
+
+// TestGetByIDRetrievesMustChangePasswordFlag verifies that GetByID returns
+// the correct flag value for both provisioned and regular users.
+func TestGetByIDRetrievesMustChangePasswordFlag(t *testing.T) {
+	repo, pool := setupUserRepo(t)
+
+	provEmail := uniqueEmail("getbyid-prov")
+	regEmail := uniqueEmail("getbyid-reg")
+	t.Cleanup(func() {
+		deleteUserByEmail(t, pool, provEmail)
+		deleteUserByEmail(t, pool, regEmail)
+	})
+
+	provCreated, err := repo.CreateProvisioned(context.Background(), "Prov", provEmail, bcryptHash(t, "Password123"), "agent")
+	if err != nil {
+		t.Fatalf("CreateProvisioned() error = %v", err)
+	}
+	regCreated, err := repo.CreateWithRole(context.Background(), "Reg", regEmail, bcryptHash(t, "Password123"), "agent")
+	if err != nil {
+		t.Fatalf("CreateWithRole() error = %v", err)
+	}
+
+	provUser, err := repo.GetByID(context.Background(), provCreated.ID)
+	if err != nil {
+		t.Fatalf("GetByID(provisioned) error = %v", err)
+	}
+	if !provUser.MustChangePassword {
+		t.Error("GetByID: expected MustChangePassword = true for provisioned user")
+	}
+
+	regUser, err := repo.GetByID(context.Background(), regCreated.ID)
+	if err != nil {
+		t.Fatalf("GetByID(regular) error = %v", err)
+	}
+	if regUser.MustChangePassword {
+		t.Error("GetByID: expected MustChangePassword = false for regular user")
+	}
+}
+
+// TestUpdatePasswordClearsMustChangePassword verifies that UpdatePassword
+// atomically sets must_change_password = FALSE, and that a subsequent read
+// via GetByID confirms the persisted value.
+func TestUpdatePasswordClearsMustChangePassword(t *testing.T) {
+	repo, pool := setupUserRepo(t)
+	email := uniqueEmail("update-pw")
+	t.Cleanup(func() { deleteUserByEmail(t, pool, email) })
+
+	created, err := repo.CreateProvisioned(context.Background(), "Must Change", email, bcryptHash(t, "OldPass123"), "agent")
+	if err != nil {
+		t.Fatalf("CreateProvisioned() error = %v", err)
+	}
+	if !created.MustChangePassword {
+		t.Fatal("precondition failed: expected MustChangePassword = true after CreateProvisioned")
+	}
+
+	if err := repo.UpdatePassword(context.Background(), created.ID, bcryptHash(t, "NewPass456")); err != nil {
+		t.Fatalf("UpdatePassword() error = %v", err)
+	}
+
+	// Verify via GetByID that the flag is cleared in the database.
+	updated, err := repo.GetByID(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("GetByID() after UpdatePassword error = %v", err)
+	}
+	if updated.MustChangePassword {
+		t.Error("expected MustChangePassword = false after UpdatePassword, got true")
+	}
+
+	// Also verify directly in the database.
+	var stored bool
+	if err := pool.QueryRow(context.Background(),
+		`SELECT must_change_password FROM users WHERE id = $1`, created.ID,
+	).Scan(&stored); err != nil {
+		t.Fatalf("failed to read must_change_password from DB: %v", err)
+	}
+	if stored {
+		t.Error("expected must_change_password = FALSE in database after UpdatePassword")
+	}
+}

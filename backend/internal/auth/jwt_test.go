@@ -27,6 +27,7 @@ func TestGenerateAndValidateToken(t *testing.T) {
 		"user-123",
 		"agent@example.com",
 		"agent",
+		false,
 	)
 	if err != nil {
 		t.Fatalf("failed to generate token: %v", err)
@@ -58,6 +59,7 @@ func TestValidateTokenWithWrongSecret(t *testing.T) {
 		"user-123",
 		"agent@example.com",
 		"agent",
+		false,
 	)
 	if err != nil {
 		t.Fatalf("failed to generate token: %v", err)

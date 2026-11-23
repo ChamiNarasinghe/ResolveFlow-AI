@@ -19,6 +19,7 @@ func TestAuthMiddleware(t *testing.T) {
 		"user-123",
 		"agent@example.com",
 		"agent",
+		false,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -125,6 +126,7 @@ func TestRequireRoles(t *testing.T) {
 				"user-123",
 				"user@example.com",
 				tt.role,
+				false,
 			)
 			if err != nil {
 				t.Fatal(err)

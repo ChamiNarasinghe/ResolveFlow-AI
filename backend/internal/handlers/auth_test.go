@@ -45,6 +45,14 @@ func (m *mockAuthService) GetProfile(
 	return m.profileResponse, m.profileErr
 }
 
+func (m *mockAuthService) ChangePassword(
+	ctx context.Context,
+	userID string,
+	request auth.ChangePasswordRequest,
+) (*auth.AuthResponse, error) {
+	return nil, nil
+}
+
 func TestAuthHandlerRegister(t *testing.T) {
 	service := &mockAuthService{
 		registerResponse: &auth.AuthResponse{
@@ -175,6 +183,7 @@ func TestAuthHandlerMe(t *testing.T) {
 		"user-123",
 		"agent@example.com",
 		"agent",
+		false,
 	)
 	if err != nil {
 		t.Fatal(err)

@@ -99,6 +99,7 @@ func TestCreateCommentSuccess(t *testing.T) {
 		"test-user-id",
 		"agent@example.com",
 		"agent",
+		false,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -171,6 +172,7 @@ func TestCreateInternalCommentSuccess(t *testing.T) {
 		"test-user-id",
 		"agent@example.com",
 		"agent",
+		false,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -324,6 +326,7 @@ func TestCreateCommentEmptyBody(t *testing.T) {
 		"test-user-id",
 		"agent@example.com",
 		"agent",
+		false,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -375,6 +378,7 @@ func TestCreateCommentTooLong(t *testing.T) {
 		"test-user-id",
 		"agent@example.com",
 		"agent",
+		false,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -453,6 +457,7 @@ func TestListCommentsSuccess(t *testing.T) {
 		"test-user-id",
 		"agent@example.com",
 		"agent",
+		false,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -522,6 +527,7 @@ func TestListCommentsEmpty(t *testing.T) {
 		"test-user-id",
 		"agent@example.com",
 		"agent",
+		false,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -638,6 +644,7 @@ func TestCreateCommentRepositoryError(t *testing.T) {
 		"test-user-id",
 		"agent@example.com",
 		"agent",
+		false,
 	)
 	if err != nil {
 		t.Fatal(err)
