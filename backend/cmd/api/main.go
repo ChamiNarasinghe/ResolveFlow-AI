@@ -102,6 +102,7 @@ func main() {
 		cfg.Environment == "development",
 		cfg.AIServiceURL,
 		cfg.AIServiceAPIKey,
+		cfg.AllowedOrigins,
 		appLog,
 	)
 

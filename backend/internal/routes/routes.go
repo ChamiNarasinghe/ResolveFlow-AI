@@ -23,6 +23,7 @@ func NewRouter(
 	allowRegistration bool,
 	aiServiceURL string,
 	aiServiceAPIKey string,
+	allowedOrigins []string,
 	log *slog.Logger,
 ) http.Handler {
 	// Rate limiters — cleanup goroutines stop when ctx is cancelled.
@@ -161,13 +162,13 @@ func NewRouter(
 	mux.Handle("DELETE /api/v1/teams/{id}/members/{userId}",
 		apiLimiter.Limit(authMiddleware(adminOnly(http.HandlerFunc(teamHandler.RemoveTeamMember)))))
 
-	// Global middleware chain: RequestID → RequestLogger → Recovery → mux.
-	// RequestID runs first so every log line and panic log carries the ID.
-	// RequestLogger wraps Recovery so its deferred log always executes, even
-	// when Recovery catches a panic and writes the 500 response.
-	return middleware.RequestID(
-		middleware.RequestLogger(log)(
-			middleware.Recovery(log)(mux),
+	// Global middleware chain: CORS → RequestID → RequestLogger → Recovery → mux.
+	// CORS runs outermost so OPTIONS preflights are handled before auth.
+	return middleware.CORS(middleware.CORSConfig{AllowedOrigins: allowedOrigins})(
+		middleware.RequestID(
+			middleware.RequestLogger(log)(
+				middleware.Recovery(log)(mux),
+			),
 		),
 	)
 }
